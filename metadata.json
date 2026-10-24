@@ -1,0 +1,8 @@
+{
+  "name": "Remix AquaSense Smart City Monitor",
+  "description": "An enterprise dashboard simulating leak detection, flow analysis, and repair prioritization for optimized urban water management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

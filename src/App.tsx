@@ -1,0 +1,3956 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useRef, useEffect } from 'react';
+import {
+  Activity,
+  AlertOctagon,
+  AlertTriangle,
+  ArrowDownToLine,
+  ArrowRight,
+  ArrowUpRight,
+  Battery,
+  BatteryCharging,
+  Bell,
+  Building2,
+  Calendar,
+  Check,
+  CheckCircle2,
+  ChevronRight,
+  Clock,
+  Cloud,
+  Compass,
+  Copy,
+  Database,
+  DollarSign,
+  Droplets,
+  ExternalLink,
+  Eye,
+  FileSpreadsheet,
+  FileText,
+  FileUp,
+  Filter,
+  Flame,
+  Gauge,
+  HelpCircle,
+  Info,
+  Layers,
+  LayoutDashboard,
+  MapPin,
+  Maximize2,
+  MessageSquare,
+  Phone,
+  PhoneCall,
+  PieChart as PieChartIcon,
+  Play,
+  Pause,
+  Radio,
+  RotateCcw,
+  Search,
+  Send,
+  Settings,
+  ShieldAlert,
+  ShieldCheck,
+  Sliders,
+  Smartphone,
+  Table,
+  TrendingDown,
+  TrendingUp,
+  Truck,
+  Upload,
+  Users,
+  Volume2,
+  Waves,
+  Wifi,
+  Wrench,
+  X,
+  Zap,
+  Box,
+  Crosshair,
+   Orbit,
+  ZoomIn,
+  ZoomOut,
+  Shuffle,
+  Mail
+} from 'lucide-react';
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Legend,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
+  ReferenceArea,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis
+} from 'recharts';
+import {
+  FlowDataPoint,
+  generateFlowSeries,
+  getAlertDetails,
+  calculateNrwMetric,
+  LeakScenario,
+  LeakageLevel,
+  classifyLeakageLevel,
+  pickRandomLeakScenario
+} from './utils/waterSimulation';
+import {
+  exportTelemetryToCsv,
+  parseTelemetryCsv,
+  BENCHMARK_SCADA_LOGS,
+  calculateOrificeLeakSizing,
+  calculateHazenWilliamsHeadLoss,
+  TelemetryRecord,
+  processTelemetryDemandFiltering
+} from './utils/hydraulicPhysics';
+import {
+  DMA_BENCHMARK_LIST,
+  SENSOR_INVENTORY,
+  REPAIR_TEAMS,
+  RepairTeam,
+  getSimulatedDmaList,
+  getSimulatedWorkOrders,
+  DmaOverview,
+  SensorDevice,
+  WorkOrder
+} from './utils/dashboardData';
+import {
+  DEFAULT_SMS_CONFIG,
+  USER_ALERT_PHONE,
+  USER_ALERT_PHONE_FORMATTED,
+  USER_ALERT_GMAIL,
+  GMAIL_RECIPIENT_OPTIONS,
+  formatPhoneNumber,
+  formatEmergencySms,
+  isValidPhoneNumber,
+  isValidGmailAddress,
+  generateCrewAcknowledgmentSms,
+  SmsRecipientConfig,
+  SmsMessage
+} from './utils/notificationService';
+import {
+  SUPABASE_CONFIG,
+  testSupabaseConnection,
+  SupabaseConnectionStatus
+} from './lib/supabase.ts';
+import {
+  syncLeakIncidentToSupabase,
+  syncWorkOrdersToSupabase,
+  syncSmsMessagesToSupabase,
+  SUPABASE_SQL_SCHEMA,
+  SupabaseSyncResult,
+  fetchRemoteWorkOrders
+} from './utils/supabaseSync.ts';
+import { Epanet3DViewer } from './components/Epanet3DViewer';
+
+// EPANET Network Topology definitions for SVG Map
+interface NetworkNode {
+  id: string;
+  label: string;
+  x: number;
+  y: number;
+  type: 'reservoir' | 'pump' | 'sensor' | 'junction' | 'target_leak';
+  pressureNominal: number; // psi
+  pressureSim: number;     // psi
+  flowLps: number;
+  description: string;
+}
+
+const NETWORK_NODES: NetworkNode[] = [
+  {
+    id: 'R-1',
+    label: 'Main Reservoir R-1',
+    x: 80,
+    y: 90,
+    type: 'reservoir',
+    pressureNominal: 72,
+    pressureSim: 71,
+    flowLps: 180,
+    description: 'Bulk municipal gravity supply feed (Capacity 4.2M Gal)'
+  },
+  {
+    id: 'PS-1',
+    label: 'Booster Pump PS-01',
+    x: 210,
+    y: 110,
+    type: 'pump',
+    pressureNominal: 68,
+    pressureSim: 67,
+    flowLps: 175,
+    description: 'Variable frequency drive booster maintaining 68 psi head'
+  },
+  {
+    id: 'S-01',
+    label: 'Sensor S-01 (Inflow)',
+    x: 320,
+    y: 120,
+    type: 'sensor',
+    pressureNominal: 66,
+    pressureSim: 64,
+    flowLps: 168,
+    description: 'Optimized placement: High-frequency ultrasonic flow meter'
+  },
+  {
+    id: 'J-102',
+    label: 'Junction J-102',
+    x: 430,
+    y: 120,
+    type: 'junction',
+    pressureNominal: 65,
+    pressureSim: 61,
+    flowLps: 140,
+    description: 'North Arterial Split to Commercial District'
+  },
+  {
+    id: 'S-02',
+    label: 'Sensor S-02 (North)',
+    x: 540,
+    y: 80,
+    type: 'sensor',
+    pressureNominal: 64,
+    pressureSim: 60,
+    flowLps: 55,
+    description: 'Optimized placement: Piezoelectric pressure transducer'
+  },
+  {
+    id: 'J-104',
+    label: 'Junction J-104',
+    x: 640,
+    y: 80,
+    type: 'junction',
+    pressureNominal: 63,
+    pressureSim: 59,
+    flowLps: 52,
+    description: 'High-tech Innovation Park Sub-grid'
+  },
+  {
+    id: 'S-03',
+    label: 'Sensor S-03 (Mid-Span)',
+    x: 430,
+    y: 210,
+    type: 'sensor',
+    pressureNominal: 64,
+    pressureSim: 55,
+    flowLps: 92,
+    description: 'Optimized placement: Dual acoustic hydrophone & pressure logger'
+  },
+  {
+    id: 'J-108',
+    label: 'Junction J-108',
+    x: 550,
+    y: 220,
+    type: 'junction',
+    pressureNominal: 63,
+    pressureSim: 44.6,
+    flowLps: 85,
+    description: 'Sector 4B - Oak St & 5th Ave 16" Ductile Iron Arterial'
+  },
+  {
+    id: 'S-04',
+    label: 'Sensor S-04 (Sector 4B)',
+    x: 670,
+    y: 220,
+    type: 'sensor',
+    pressureNominal: 62,
+    pressureSim: 46,
+    flowLps: 42,
+    description: 'Optimized placement: Downstream transient pressure recorder'
+  },
+  {
+    id: 'J-112',
+    label: 'Junction J-112',
+    x: 320,
+    y: 300,
+    type: 'junction',
+    pressureNominal: 63,
+    pressureSim: 62,
+    flowLps: 45,
+    description: 'South Residential District Feeder'
+  },
+  {
+    id: 'S-05',
+    label: 'Sensor S-05 (South Feeder)',
+    x: 460,
+    y: 310,
+    type: 'sensor',
+    pressureNominal: 62,
+    pressureSim: 61,
+    flowLps: 40,
+    description: 'Optimized placement: Low-power IoT flow velocity sensor'
+  },
+  {
+    id: 'S-06',
+    label: 'Sensor S-06 (Boundary DMZ)',
+    x: 620,
+    y: 320,
+    type: 'sensor',
+    pressureNominal: 61,
+    pressureSim: 59,
+    flowLps: 36,
+    description: 'Optimized placement: Boundary pressure check sensor'
+  }
+];
+
+// Pipe segments connecting nodes
+const PIPE_SEGMENTS = [
+  { from: 'R-1', to: 'PS-1', diameter: '24" Main Feed', strokeWidth: 5 },
+  { from: 'PS-1', to: 'S-01', diameter: '20" Transmission', strokeWidth: 4.5 },
+  { from: 'S-01', to: 'J-102', diameter: '18" Arterial', strokeWidth: 4 },
+  { from: 'J-102', to: 'S-02', diameter: '14" Commercial Branch', strokeWidth: 3 },
+  { from: 'S-02', to: 'J-104', diameter: '12" Branch', strokeWidth: 2.5 },
+  { from: 'J-102', to: 'S-03', diameter: '16" Central Arterial', strokeWidth: 3.5 },
+  { from: 'S-03', to: 'J-108', diameter: '16" Main Arterial', strokeWidth: 3.5 },
+  { from: 'J-108', to: 'S-04', diameter: '14" Downstream Loop', strokeWidth: 3 },
+  { from: 'S-01', to: 'J-112', diameter: '14" South Trunk', strokeWidth: 3 },
+  { from: 'J-112', to: 'S-05', diameter: '12" Residential', strokeWidth: 2.5 },
+  { from: 'S-05', to: 'S-06', diameter: '10" Boundary', strokeWidth: 2 },
+  { from: 'J-108', to: 'S-06', diameter: '10" Cross-link', strokeWidth: 2 }
+];
+
+// 3D CAD Piping Network Asset URL
+const ISOMETRIC_CAD_IMAGE_URL = '/assets/aistudio/Gemini_Generated_Image_bl06flbl06flbl06_67926709.png';
+
+export interface IsometricHotspot {
+  id: string;
+  label: string;
+  type: 'leak' | 'sensor' | 'valve' | 'pump' | 'junction' | 'reservoir';
+  xPct: number;
+  yPct: number;
+  pressureNominal: number;
+  pressureSim: number;
+  flowLps: number;
+  spec: string;
+  description: string;
+  subType?: string;
+}
+
+export const ISOMETRIC_HOTSPOTS: IsometricHotspot[] = [
+  {
+    id: 'J-108',
+    label: 'Junction J-108 (East Arterial)',
+    type: 'junction',
+    xPct: 58.2,
+    yPct: 31.0,
+    pressureNominal: 63.0,
+    pressureSim: 44.6,
+    flowLps: 85,
+    spec: '16" Ductile Iron Flanged Arterial Tee',
+    description: 'Oak & 5th Ave arterial distribution tee connecting East Sector loop.',
+    subType: 'Arterial Tee Manifold'
+  },
+  {
+    id: 'V-108A',
+    label: 'Isolation Valve V-108A',
+    type: 'valve',
+    xPct: 52.8,
+    yPct: 35.2,
+    pressureNominal: 63.5,
+    pressureSim: 48.0,
+    flowLps: 85,
+    spec: '16" Resilient Wedge Flanged Gate Valve',
+    description: 'Upstream isolation point on Oak St. Disconnects main supply to rupture node.',
+    subType: 'Upstream Isolation'
+  },
+  {
+    id: 'V-108B',
+    label: 'Isolation Valve V-108B',
+    type: 'valve',
+    xPct: 62.4,
+    yPct: 39.4,
+    pressureNominal: 62.8,
+    pressureSim: 46.5,
+    flowLps: 42,
+    spec: '14" OS&Y Handwheel Flanged Gate Valve',
+    description: 'Downstream isolation point on branch loop. Protects City Central Hospital bypass flow.',
+    subType: 'Downstream Isolation'
+  },
+  {
+    id: 'PS-01',
+    label: 'Booster Pump Station PS-01',
+    type: 'pump',
+    xPct: 46.6,
+    yPct: 76.5,
+    pressureNominal: 64.7,
+    pressureSim: 58.2,
+    flowLps: 145,
+    spec: 'Centrifugal Inline Booster • 35.5 kW • +38.5m Head',
+    description: 'Dual-suction municipal pump maintaining distribution head across Sector 4B.',
+    subType: 'Primary Booster'
+  },
+  {
+    id: 'S-01',
+    label: 'Sensor S-01 (Bulk Inflow)',
+    type: 'sensor',
+    xPct: 22.8,
+    yPct: 62.0,
+    pressureNominal: 65.0,
+    pressureSim: 64.2,
+    flowLps: 140,
+    spec: 'Electromagnetic Flowmeter & Pressure Transducer',
+    description: 'Bulk supply metering station. Reports baseline diurnal inflow into DMA-04.',
+    subType: 'Inflow Logger'
+  },
+  {
+    id: 'S-02',
+    label: 'Sensor S-02 (Pump Discharge)',
+    type: 'sensor',
+    xPct: 54.0,
+    yPct: 80.5,
+    pressureNominal: 64.0,
+    pressureSim: 62.5,
+    flowLps: 98,
+    spec: 'Acoustic Hydrophone & Dynamic Pressure Cell',
+    description: 'Optimized sensor monitoring booster pump discharge gradients and cavitation.',
+    subType: 'Discharge Logger'
+  },
+  {
+    id: 'S-03',
+    label: 'Sensor S-03 (Mid-Span Acoustic)',
+    type: 'sensor',
+    xPct: 51.5,
+    yPct: 30.0,
+    pressureNominal: 64.0,
+    pressureSim: 55.0,
+    flowLps: 92,
+    spec: 'IoT Acoustic Correlator Transducer',
+    description: 'Immediate upstream acoustic listening post. Captured high-frequency rupture soundings.',
+    subType: 'Acoustic Transducer'
+  },
+  {
+    id: 'S-04',
+    label: 'Sensor S-04 (Sector 4B Downstream)',
+    type: 'sensor',
+    xPct: 64.8,
+    yPct: 74.0,
+    pressureNominal: 62.0,
+    pressureSim: 46.0,
+    flowLps: 42,
+    spec: 'Downstream Transient Wave Recorder',
+    description: 'Detects transient water hammer waves and downstream residual hydraulic head.',
+    subType: 'Transient Recorder'
+  },
+  {
+    id: 'S-05',
+    label: 'Sensor S-05 (North Feeder Loop)',
+    type: 'sensor',
+    xPct: 49.0,
+    yPct: 22.0,
+    pressureNominal: 62.5,
+    pressureSim: 61.0,
+    flowLps: 40,
+    spec: 'Ultra-low power IoT velocity logger',
+    description: 'Residential feeder loop acoustic monitoring node.',
+    subType: 'Feeder Logger'
+  },
+  {
+    id: 'S-06',
+    label: 'Sensor S-06 (Boundary DMZ)',
+    type: 'sensor',
+    xPct: 69.5,
+    yPct: 39.0,
+    pressureNominal: 61.0,
+    pressureSim: 59.0,
+    flowLps: 36,
+    spec: 'District Boundary Multi-Parameter Cell',
+    description: 'DMA boundary meter checking inter-district transfer balance.',
+    subType: 'Boundary Logger'
+  },
+  {
+    id: 'J-102',
+    label: 'Header Cross J-102',
+    type: 'junction',
+    xPct: 30.5,
+    yPct: 56.5,
+    pressureNominal: 64.5,
+    pressureSim: 63.8,
+    flowLps: 135,
+    spec: '20" x 16" Flanged 4-Way Cross Manifold',
+    description: 'Arterial distribution node splitting bulk flow to north and south feeders.',
+    subType: 'Main Cross Manifold'
+  },
+  {
+    id: 'R-1',
+    label: 'Bulk Feed Reservoir R-1 Flange',
+    type: 'reservoir',
+    xPct: 9.5,
+    yPct: 35.5,
+    pressureNominal: 65.5,
+    pressureSim: 65.5,
+    flowLps: 140,
+    spec: '24" High-Pressure Ductile Iron Main Feed',
+    description: 'Clearwell reservoir intake flange connection from municipal treatment works.',
+    subType: 'Intake Flange'
+  }
+];
+
+type ActiveDashboardTab = 'live_monitoring' | 'nrw_audit' | 'sensor_placement' | 'work_orders';
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState<ActiveDashboardTab>('live_monitoring');
+  const [isSimulating, setIsSimulating] = useState<boolean>(false);
+  const [autoSimEnabled, setAutoSimEnabled] = useState<boolean>(true);
+  const [activeLeakScenario, setActiveLeakScenario] = useState<LeakScenario | null>(null);
+  const [leakSecondsRemaining, setLeakSecondsRemaining] = useState<number>(60);
+  const [selectedTeamIds, setSelectedTeamIds] = useState<string[]>(
+    REPAIR_TEAMS.filter(t => t.defaultSelected).map(t => t.id)
+  );
+  const [reportedLeakageLevel, setReportedLeakageLevel] = useState<LeakageLevel>('Large');
+  const lastLeakNodeIdRef = useRef<string | null>(null);
+  const [selectedNode, setSelectedNode] = useState<NetworkNode | null>(null);
+  const [isDispatched, setIsDispatched] = useState<boolean>(false);
+  const [showDispatchModal, setShowDispatchModal] = useState<boolean>(false);
+  const [showDataDrawer, setShowDataDrawer] = useState<boolean>(false);
+  const [selectedDma, setSelectedDma] = useState<string>('DMA-04 (Eastern Sector)');
+  const [customDataset, setCustomDataset] = useState<{ time: string; actual: number; expected: number; pressure: number }[] | null>(null);
+  const [csvUploadFeedback, setCsvUploadFeedback] = useState<string | null>(null);
+
+  // 3D Isometric CAD Digital Twin controls
+  const [cadViewMode, setCadViewMode] = useState<'interactive_3d' | 'isometric_3d' | 'schematic_2d'>('interactive_3d');
+  const [cadShowSensors, setCadShowSensors] = useState<boolean>(true);
+  const [cadShowValves, setCadShowValves] = useState<boolean>(true);
+  const [cadShowStress, setCadShowStress] = useState<boolean>(true);
+  const [cadShowDimensions, setCadShowDimensions] = useState<boolean>(true);
+  const [isolatedValves, setIsolatedValves] = useState<string[]>([]);
+  const [selectedHotspot, setSelectedHotspot] = useState<IsometricHotspot | null>(
+    ISOMETRIC_HOTSPOTS.find(h => h.id === 'J-102') || ISOMETRIC_HOTSPOTS[0]
+  );
+  const [cadZoom, setCadZoom] = useState<number>(1.0);
+
+  // Sensor placement interactive budget slider
+  const [sensorBudgetK, setSensorBudgetK] = useState<number>(6);
+
+  // Notification and SMS / Gmail Receiving Options & Feed
+  const [showSmsModal, setShowSmsModal] = useState<boolean>(false);
+  const [smsModalTab, setSmsModalTab] = useState<'phone_preview' | 'recipient_settings'>('phone_preview');
+  const [smsConfig, setSmsConfig] = useState<SmsRecipientConfig>(() => {
+    try {
+      const saved = localStorage.getItem('leaknova_sms_config');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed.phoneNumber && !parsed.phoneNumber.includes('349-2810')) {
+          return {
+            ...DEFAULT_SMS_CONFIG,
+            ...parsed,
+            recipientEmail: parsed.recipientEmail || USER_ALERT_GMAIL,
+            sendGmailAlert: parsed.sendGmailAlert ?? true
+          };
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return DEFAULT_SMS_CONFIG;
+  });
+  const [smsPhoneInput, setSmsPhoneInput] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('leaknova_sms_config');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed.phoneNumber && !parsed.phoneNumber.includes('349-2810')) {
+          return parsed.phoneNumber;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return USER_ALERT_PHONE_FORMATTED;
+  });
+  const [smsEmailInput, setSmsEmailInput] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('leaknova_sms_config');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed.recipientEmail) {
+          return parsed.recipientEmail;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return USER_ALERT_GMAIL;
+  });
+  const [smsNameInput, setSmsNameInput] = useState<string>(DEFAULT_SMS_CONFIG.name);
+  const [smsGatewayInput, setSmsGatewayInput] = useState<SmsRecipientConfig['smsGateway']>(DEFAULT_SMS_CONFIG.smsGateway);
+  const [manualSmsText, setManualSmsText] = useState<string>('');
+  const [smsToast, setSmsToast] = useState<{ id: string; text: string; time: string; phone: string; email?: string; subject?: string } | null>(null);
+
+  // Pre-seeded initial SMS & Gmail history
+  const [smsMessages, setSmsMessages] = useState<SmsMessage[]>([
+    {
+      id: 'sms-init-1',
+      timestamp: '08:00',
+      recipientPhone: USER_ALERT_PHONE_FORMATTED,
+      recipientEmail: USER_ALERT_GMAIL,
+      recipientName: `Duty Engineer (${USER_ALERT_GMAIL})`,
+      direction: 'OUTBOUND_ALERT',
+      channel: 'GMAIL',
+      subject: '[LeakNova SCADA] Automatic 1-Min Leak Simulation & Gmail Alert Active',
+      messageText: `EPANET SCADA Dispatch Sync: Automatic 1-minute leak location monitoring active. Alerts routed to Gmail (${USER_ALERT_GMAIL}) and mobile #${USER_ALERT_PHONE} (${USER_ALERT_PHONE_FORMATTED}).`,
+      severity: 'INFO',
+      status: 'Sent to Gmail'
+    }
+  ]);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Live series and hydraulic calculations
+  const flowData: FlowDataPoint[] = generateFlowSeries(
+    isSimulating,
+    customDataset || (activeLeakScenario ? activeLeakScenario.leakSizeLps : undefined)
+  );
+  const activeAnomaly = flowData.reduce((max, d) => Math.max(max, d.leakAnomaly || 0), 0);
+  const alertDetails = getAlertDetails(isSimulating, activeAnomaly, activeLeakScenario);
+  const nrwMetric = calculateNrwMetric(isSimulating, flowData);
+
+  // Selected repair teams currently assigned to go to the leakage spot
+  const selectedRepairTeams: RepairTeam[] = REPAIR_TEAMS.filter(t => selectedTeamIds.includes(t.id));
+  const selectedTeamNamesLabel =
+    selectedRepairTeams.length > 0
+      ? selectedRepairTeams.map(t => `${t.unitCode} (${t.leadEngineer})`).join(' + ')
+      : 'Unit #4 (Marcus Vance, P.E.)';
+
+  // Multi-dashboard simulated arrays
+  const dmaList: DmaOverview[] = getSimulatedDmaList(isSimulating);
+  const workOrdersList: WorkOrder[] = getSimulatedWorkOrders(
+    isSimulating,
+    isDispatched,
+    activeLeakScenario,
+    selectedRepairTeams.map(t => t.name),
+    reportedLeakageLevel
+  );
+
+  // Auto-dismiss SMS toast after 6 seconds
+  useEffect(() => {
+    if (smsToast) {
+      const timer = setTimeout(() => {
+        setSmsToast(null);
+      }, 6000);
+      return () => clearTimeout(timer);
+    }
+  }, [smsToast]);
+
+  // Supabase Cloud Integration & Live Sync State
+  const [showSupabaseModal, setShowSupabaseModal] = useState<boolean>(false);
+  const [supabaseTab, setSupabaseTab] = useState<'status' | 'sql_schema' | 'sync_data'>('status');
+  const [supabaseStatus, setSupabaseStatus] = useState<SupabaseConnectionStatus | null>(null);
+  const [isTestingSupabase, setIsTestingSupabase] = useState<boolean>(false);
+  const [isSyncingSupabase, setIsSyncingSupabase] = useState<boolean>(false);
+  const [copiedSql, setCopiedSql] = useState<boolean>(false);
+  const [supabaseSyncLogs, setSupabaseSyncLogs] = useState<SupabaseSyncResult[]>([
+    {
+      success: true,
+      table: 'connection_handshake',
+      count: 1,
+      message: `Configured Supabase client for project atgbqxmergxaaazrhbpr (${SUPABASE_CONFIG.region})`,
+      timestamp: 'Ready'
+    }
+  ]);
+
+  // Initial Supabase connection ping
+  useEffect(() => {
+    testSupabaseConnection().then(status => {
+      setSupabaseStatus(status);
+    });
+  }, []);
+
+  const handleTestSupabase = async () => {
+    setIsTestingSupabase(true);
+    try {
+      const res = await testSupabaseConnection();
+      setSupabaseStatus(res);
+      setSupabaseSyncLogs(prev => [
+        {
+          success: res.connected,
+          table: 'rest_api_ping',
+          count: 1,
+          message: res.connected
+            ? `Connection verified in ${res.latencyMs}ms to ${res.projectInfo.url}`
+            : `Connection check failed: ${res.error}`,
+          timestamp: new Date().toLocaleTimeString()
+        },
+        ...prev
+      ]);
+    } finally {
+      setIsTestingSupabase(false);
+    }
+  };
+
+  const handleSyncLeakToSupabase = async () => {
+    if (!alertDetails) return;
+    setIsSyncingSupabase(true);
+    try {
+      const result = await syncLeakIncidentToSupabase(alertDetails);
+      setSupabaseSyncLogs(prev => [result, ...prev]);
+      setSmsToast({
+        id: `toast-supa-${Date.now()}`,
+        text: result.success
+          ? `Supabase: Synced Leak Incident Node ${alertDetails.nodeId} (85 L/s)`
+          : `Supabase Notice: ${result.message.slice(0, 65)}...`,
+        time: result.timestamp,
+        phone: 'Supabase DB'
+      });
+    } finally {
+      setIsSyncingSupabase(false);
+    }
+  };
+
+  const handleSyncWorkOrdersToSupabase = async () => {
+    setIsSyncingSupabase(true);
+    try {
+      const result = await syncWorkOrdersToSupabase(workOrdersList);
+      setSupabaseSyncLogs(prev => [result, ...prev]);
+      setSmsToast({
+        id: `toast-supa-wo-${Date.now()}`,
+        text: result.success
+          ? `Supabase: Synced ${result.count} Work Orders to Postgres`
+          : `Supabase Notice: ${result.message.slice(0, 65)}...`,
+        time: result.timestamp,
+        phone: 'Supabase DB'
+      });
+    } finally {
+      setIsSyncingSupabase(false);
+    }
+  };
+
+  const handleSyncSmsToSupabase = async () => {
+    setIsSyncingSupabase(true);
+    try {
+      const result = await syncSmsMessagesToSupabase(smsMessages);
+      setSupabaseSyncLogs(prev => [result, ...prev]);
+      setSmsToast({
+        id: `toast-supa-sms-${Date.now()}`,
+        text: result.success
+          ? `Supabase: Synced ${result.count} SMS records to sms_dispatches`
+          : `Supabase Notice: ${result.message.slice(0, 65)}...`,
+        time: result.timestamp,
+        phone: 'Supabase DB'
+      });
+    } finally {
+      setIsSyncingSupabase(false);
+    }
+  };
+
+  const handleCopySql = () => {
+    navigator.clipboard.writeText(SUPABASE_SQL_SCHEMA);
+    setCopiedSql(true);
+    setTimeout(() => setCopiedSql(false), 2500);
+  };
+
+  const toggleValveIsolation = (valveId: string) => {
+    setIsolatedValves(prev => {
+      const isAlready = prev.includes(valveId);
+      const next = isAlready ? prev.filter(v => v !== valveId) : [...prev, valveId];
+      
+      const timeStr = new Date().toLocaleTimeString();
+      setSmsToast({
+        id: `toast-valve-${Date.now()}`,
+        text: isAlready
+          ? `Valve ${valveId} reopened to regular pipeline flow`
+          : `Valve ${valveId} ISOLATED. Rupture containment active.`,
+        time: timeStr,
+        phone: 'Telemetry'
+      });
+      return next;
+    });
+  };
+
+  const handleToggleRepairTeam = (teamId: string) => {
+    setSelectedTeamIds(prev => {
+      const exists = prev.includes(teamId);
+      if (exists && prev.length <= 1) {
+        // Keep at least one repair team selected
+        return prev;
+      }
+      const next = exists ? prev.filter(id => id !== teamId) : [...prev, teamId];
+      const nextTeams = REPAIR_TEAMS.filter(t => next.includes(t.id));
+      const nextLabel = nextTeams.map(t => `${t.unitCode} (${t.leadEngineer})`).join(', ');
+      if (isSimulating && activeLeakScenario) {
+        const now = new Date();
+        const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+        const teamUpdateMsg: SmsMessage = {
+          id: `team-sel-${Date.now()}`,
+          timestamp: timeStr,
+          recipientPhone: smsConfig.phoneNumber,
+          recipientEmail: smsConfig.recipientEmail,
+          recipientName: `Repair Dispatch (${ nextLabel })`,
+          direction: 'INBOUND_REPLY',
+          channel: 'GMAIL',
+          subject: `👷 [REPAIR TEAM DEPLOYED] ${nextLabel} at Node ${activeLeakScenario.nodeId}`,
+          messageText: `👷 [REPAIR TEAM AT LEAKAGE SPOT] Selected team(s) ${nextLabel} deployed to Node ${activeLeakScenario.nodeId} (${activeLeakScenario.locationName}). Reported Leakage: ${reportedLeakageLevel.toUpperCase()} (${activeLeakScenario.leakSizeLps} L/s).`,
+          severity: reportedLeakageLevel === 'Large' ? 'CRITICAL' : reportedLeakageLevel === 'Medium' ? 'WARNING' : 'INFO',
+          status: 'Received'
+        };
+        setSmsMessages(msgs => [teamUpdateMsg, ...msgs]);
+      }
+      return next;
+    });
+  };
+
+  const handleReportLeakageLevel = (level: LeakageLevel) => {
+    setReportedLeakageLevel(level);
+    setIsDispatched(true);
+    const nodeId = activeLeakScenario?.nodeId || 'J-108';
+    const locName = activeLeakScenario?.locationName || 'Sector 4B - Oak Street & 5th Avenue Junction';
+    const lps = activeLeakScenario?.leakSizeLps || (level === 'Large' ? 85 : level === 'Medium' ? 58 : 32);
+    const now = new Date();
+    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const targetGmail = smsConfig.recipientEmail || USER_ALERT_GMAIL;
+    const reportSubject = `👷 [Repair Team Field Report] Node ${nodeId} Leakage Classified as ${level.toUpperCase()}`;
+    const reportBody = `👷 [REPAIR TEAM FIELD ASSESSMENT] Selected Repair Team(s): ${selectedTeamNamesLabel} at leakage spot Node ${nodeId} (${locName}). On-site visual & acoustic inspection confirms LEAKAGE LEVEL: ${level.toUpperCase()} (~${lps} L/s). Sent to Gmail: ${targetGmail}.`;
+
+    const fieldReportMsg: SmsMessage = {
+      id: `field-rep-${Date.now()}`,
+      timestamp: timeStr,
+      recipientPhone: smsConfig.phoneNumber,
+      recipientEmail: targetGmail,
+      recipientName: `Field Report: ${selectedTeamNamesLabel}`,
+      direction: 'INBOUND_REPLY',
+      channel: 'GMAIL',
+      subject: reportSubject,
+      messageText: reportBody,
+      severity: level === 'Large' ? 'CRITICAL' : level === 'Medium' ? 'WARNING' : 'INFO',
+      status: 'Sent to Gmail'
+    };
+
+    setSmsMessages(prev => [fieldReportMsg, ...prev]);
+    setSmsToast({
+      id: `toast-level-${Date.now()}`,
+      text: `👷 Repair Team (${selectedTeamNamesLabel}) at Node ${nodeId} reported leakage as ${level.toUpperCase()}`,
+      time: timeStr,
+      phone: smsConfig.phoneNumber,
+      email: targetGmail,
+      subject: reportSubject
+    });
+  };
+
+  const triggerLeakScenario = (scenario: LeakScenario) => {
+    setActiveLeakScenario(scenario);
+    setReportedLeakageLevel(scenario.leakageLevel);
+    setLeakSecondsRemaining(60);
+    lastLeakNodeIdRef.current = scenario.nodeId;
+    setIsDispatched(true);
+    setIsolatedValves([]);
+
+    const leakNode = NETWORK_NODES.find(n => n.id === scenario.nodeId);
+    if (leakNode) setSelectedNode(leakNode);
+
+    const leakHotspot = ISOMETRIC_HOTSPOTS.find(h => h.id === scenario.nodeId);
+    if (leakHotspot) setSelectedHotspot(leakHotspot);
+
+    // Automated Emergency Gmail & SMS Dispatch + Selected Repair Team Field Assessment
+    if (smsConfig.sendOnCriticalBurst || smsConfig.sendGmailAlert) {
+      const activeTeams = REPAIR_TEAMS.filter(t => selectedTeamIds.includes(t.id));
+      const activeTeamsText =
+        activeTeams.length > 0
+          ? activeTeams.map(t => `${t.name} (${t.leadEngineer})`).join(' & ')
+          : 'Alpha Team — Rapid Hydraulics Unit #4 (Marcus Vance, P.E.)';
+
+      const emergencyText = `${formatEmergencySms(
+        scenario.nodeId,
+        scenario.leakSizeLps,
+        scenario.locationName,
+        scenario.isolationValves,
+        scenario.workOrderId
+      )} | Leakage Severity: ${scenario.leakageLevel.toUpperCase()} | Dispatched Repair Team(s): ${activeTeamsText}.`;
+
+      const now = new Date();
+      const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      const targetGmail = smsConfig.recipientEmail || USER_ALERT_GMAIL;
+      const emailSubject = `🚨 [LeakNova Alert] ${scenario.leakageLevel.toUpperCase()} Leakage at Node ${scenario.nodeId} (${scenario.locationName})`;
+
+      const burstMsg: SmsMessage = {
+        id: `sms-burst-${Date.now()}`,
+        timestamp: timeStr,
+        recipientPhone: smsConfig.phoneNumber,
+        recipientEmail: targetGmail,
+        recipientName: `${smsConfig.name} (${targetGmail})`,
+        direction: 'OUTBOUND_ALERT',
+        channel: 'GMAIL',
+        subject: emailSubject,
+        messageText: emergencyText,
+        severity: scenario.leakageLevel === 'Large' ? 'CRITICAL' : scenario.leakageLevel === 'Medium' ? 'WARNING' : 'INFO',
+        status: 'Sent to Gmail'
+      };
+
+      setSmsMessages(prev => [burstMsg, ...prev]);
+      setSmsToast({
+        id: `toast-${Date.now()}`,
+        text: `🚨 ${scenario.leakageLevel.toUpperCase()} LEAK AT ${scenario.nodeId} (${scenario.leakSizeLps} L/s) — Selected Team Dispatched & Sent to ${targetGmail}`,
+        time: timeStr,
+        phone: smsConfig.phoneNumber,
+        email: targetGmail,
+        subject: emailSubject
+      });
+
+      setTimeout(() => {
+        const replyTime = new Date();
+        const replyTimeStr = `${String(replyTime.getHours()).padStart(2, '0')}:${String(replyTime.getMinutes()).padStart(2, '0')}`;
+        const teamReport: SmsMessage = {
+          id: `sms-team-rep-${Date.now()}`,
+          timestamp: replyTimeStr,
+          recipientPhone: activeTeams[0]?.phone || '+1 (555) 792-4419',
+          recipientEmail: targetGmail,
+          recipientName: `${activeTeams.map(t => t.unitCode).join(' + ')} On-Site Lead`,
+          direction: 'INBOUND_REPLY',
+          channel: 'GMAIL',
+          subject: `👷 [ON-SITE REPORT] Node ${scenario.nodeId} Leakage is ${scenario.leakageLevel.toUpperCase()}`,
+          messageText: `👷 [REPAIR TEAM AT LEAKAGE SPOT] ${activeTeamsText} arrived at Node ${scenario.nodeId} (${scenario.locationName}). Field inspection complete: Leakage classified as ${scenario.leakageLevel.toUpperCase()} (${scenario.leakSizeLps} L/s). Beginning ${scenario.leakageLevel === 'Large' ? 'valve isolation & hydro-vac excavation' : scenario.leakageLevel === 'Medium' ? 'mechanical split-sleeve clamping' : 'precision collar sealing'}.`,
+          severity: scenario.leakageLevel === 'Large' ? 'CRITICAL' : scenario.leakageLevel === 'Medium' ? 'WARNING' : 'INFO',
+          status: 'Sent to Gmail'
+        };
+        setSmsMessages(prev => [teamReport, ...prev]);
+      }, 1800);
+    }
+  };
+
+  const handleRandomizeLeakLocation = () => {
+    const randomScenario = pickRandomLeakScenario(lastLeakNodeIdRef.current);
+    if (!isSimulating) {
+      setIsSimulating(true);
+    }
+    triggerLeakScenario(randomScenario);
+  };
+
+  // Toggle simulation with automated SMS dispatch and random leak location
+  const handleToggleSimulation = () => {
+    const nextState = !isSimulating;
+    setIsSimulating(nextState);
+
+    if (!nextState) {
+      const clearedNodeId = activeLeakScenario?.nodeId || 'J-108';
+      const clearedNominalPsi = activeLeakScenario?.pressureNominalPsi || 63.0;
+      setActiveLeakScenario(null);
+      setIsDispatched(false);
+      setShowDispatchModal(false);
+      setSelectedNode(null);
+      setIsolatedValves([]);
+      const defaultNormalHotspot = ISOMETRIC_HOTSPOTS.find(h => h.id === 'J-102') || ISOMETRIC_HOTSPOTS[0];
+      setSelectedHotspot(defaultNormalHotspot);
+
+      // Log recovery SMS
+      const now = new Date();
+      const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      const recoverySms: SmsMessage = {
+        id: `sms-rec-${Date.now()}`,
+        timestamp: timeStr,
+        recipientPhone: smsConfig.phoneNumber,
+        recipientEmail: smsConfig.recipientEmail,
+        recipientName: smsConfig.name,
+        direction: 'OUTBOUND_ALERT',
+        channel: 'GMAIL',
+        messageText: `✅ [SCADA ALL-CLEAR] Network simulation reset. Node ${clearedNodeId} returned to nominal operating pressure (${clearedNominalPsi.toFixed(1)} psi). NRW baseline normalized to 11.8%.`,
+        severity: 'INFO',
+        status: 'Sent to Gmail'
+      };
+      setSmsMessages(prev => [recoverySms, ...prev]);
+      setSmsToast({
+        id: `toast-${Date.now()}`,
+        text: 'SCADA Alert: Network reset to nominal baseline. All pipes normal.',
+        time: timeStr,
+        phone: smsConfig.phoneNumber,
+        email: smsConfig.recipientEmail
+      });
+    } else {
+      const randomScenario = pickRandomLeakScenario(lastLeakNodeIdRef.current);
+      triggerLeakScenario(randomScenario);
+    }
+  };
+
+  // Automatic simulation lifecycle:
+  // 1) Starts with all pipes in a normal state first (3.5s)
+  // 2) Automatically shows one leak location for 1 minute (60,000 ms) and changes to a new random location every 1 minute
+  useEffect(() => {
+    if (!autoSimEnabled) return;
+
+    if (!isSimulating) {
+      // Pipe is normal first, then automatically starts leak simulation at a random location
+      const startTimer = setTimeout(() => {
+        const randomScenario = pickRandomLeakScenario(lastLeakNodeIdRef.current);
+        setIsSimulating(true);
+        triggerLeakScenario(randomScenario);
+      }, 3500);
+      return () => clearTimeout(startTimer);
+    } else {
+      // While simulating, show one leak location for 1 minute (60,000 ms) and change it every 1 minute
+      const cycleInterval = setInterval(() => {
+        const nextRandomScenario = pickRandomLeakScenario(lastLeakNodeIdRef.current);
+        setIsDispatched(false);
+        setSelectedNode(null);
+        setIsolatedValves([]);
+        triggerLeakScenario(nextRandomScenario);
+      }, 60000);
+      return () => clearInterval(cycleInterval);
+    }
+  }, [autoSimEnabled, isSimulating]);
+
+  // 1-second countdown ticker for the 1-minute (60s) single-location leak window
+  useEffect(() => {
+    if (!isSimulating) {
+      setLeakSecondsRemaining(60);
+      return;
+    }
+    const countdownTimer = setInterval(() => {
+      setLeakSecondsRemaining(prev => (prev > 1 ? prev - 1 : 60));
+    }, 1000);
+    return () => clearInterval(countdownTimer);
+  }, [isSimulating, activeLeakScenario]);
+
+  const handleSelectGmailQuick = (newEmail: string) => {
+    setSmsEmailInput(newEmail);
+    const updatedConfig: SmsRecipientConfig = {
+      ...smsConfig,
+      recipientEmail: newEmail
+    };
+    setSmsConfig(updatedConfig);
+    try {
+      localStorage.setItem('leaknova_sms_config', JSON.stringify(updatedConfig));
+    } catch {
+      // ignore
+    }
+    const now = new Date();
+    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const currentNode = activeLeakScenario?.nodeId || 'J-108';
+    const currentLoc = activeLeakScenario?.locationName || 'Oak & 5th Ave';
+    const currentLps = activeLeakScenario?.leakSizeLps || 85;
+    const alertMsg: SmsMessage = {
+      id: `gmail-sel-${Date.now()}`,
+      timestamp: timeStr,
+      recipientPhone: smsConfig.phoneNumber,
+      recipientEmail: newEmail,
+      recipientName: `${smsConfig.name} (${newEmail})`,
+      direction: 'OUTBOUND_ALERT',
+      channel: 'GMAIL',
+      subject: `🚨 [LeakNova Alert] Active Leak at Node ${currentNode} (${currentLoc})`,
+      messageText: isSimulating
+        ? `🚨 [LeakNova Gmail Alert] Routed to ${newEmail}: Active pipe leak localized at Node ${currentNode} (${currentLoc}) — ${currentLps} L/s. Work Order #${activeLeakScenario?.workOrderId || 'WO-8842'}.`
+        : `✅ [LeakNova Gmail Alert] Selected Gmail updated to ${newEmail}. Automatic 1-minute leak notifications will be sent to this address.`,
+      severity: isSimulating ? 'CRITICAL' : 'INFO',
+      status: 'Sent to Gmail'
+    };
+    setSmsMessages(prev => [alertMsg, ...prev]);
+    setSmsToast({
+      id: `toast-gmail-${Date.now()}`,
+      text: `Gmail Alert sent to selected recipient: ${newEmail}`,
+      time: timeStr,
+      phone: smsConfig.phoneNumber,
+      email: newEmail
+    });
+  };
+
+  const handleDispatchAction = () => {
+    setIsDispatched(true);
+    setShowDispatchModal(true);
+
+    const targetNodeId = activeLeakScenario?.nodeId || 'J-108';
+    const targetWoId = activeLeakScenario?.workOrderId || 'WO-8842';
+    const targetLoc = activeLeakScenario?.locationName || 'Oak & 5th Ave';
+
+    // Send dispatch confirmation to Gmail & SMS
+    const now = new Date();
+    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const dispatchSms: SmsMessage = {
+      id: `sms-disp-${Date.now()}`,
+      timestamp: timeStr,
+      recipientPhone: smsConfig.phoneNumber,
+      recipientEmail: smsConfig.recipientEmail,
+      recipientName: `${smsConfig.name} (${smsConfig.recipientEmail})`,
+      direction: 'OUTBOUND_ALERT',
+      channel: 'GMAIL',
+      subject: `[DISPATCH CONFIRMED] Work Order #${targetWoId} — Node ${targetNodeId}`,
+      messageText: `[DISPATCH CONFIRMED] Work Order #${targetWoId} assigned to Unit #4 (Hydraulics). Target: Node ${targetNodeId} (${targetLoc}). Sent to Gmail: ${smsConfig.recipientEmail}.`,
+      severity: 'WARNING',
+      status: 'Sent to Gmail'
+    };
+    setSmsMessages(prev => [dispatchSms, ...prev]);
+    setSmsToast({
+      id: `toast-${Date.now()}`,
+      text: `Gmail & SMS Dispatched: Work Order #${targetWoId} (${targetNodeId}) sent to ${smsConfig.recipientEmail}`,
+      time: timeStr,
+      phone: smsConfig.phoneNumber,
+      email: smsConfig.recipientEmail
+    });
+  };
+
+  const handleSendTestSms = () => {
+    const now = new Date();
+    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const targetEmail = smsEmailInput.trim() || smsConfig.recipientEmail || USER_ALERT_GMAIL;
+    const testSms: SmsMessage = {
+      id: `sms-test-${Date.now()}`,
+      timestamp: timeStr,
+      recipientPhone: smsConfig.phoneNumber,
+      recipientEmail: targetEmail,
+      recipientName: `${smsConfig.name} (${targetEmail})`,
+      direction: 'OUTBOUND_ALERT',
+      channel: 'GMAIL',
+      subject: `🔔 [LeakNova Test Alert] Gmail & SMS Verification`,
+      messageText: `🔔 [SCADA TEST ALERT] Emergency Gmail & SMS verification from LeakNova Smart City Water Monitor. Active leak alert destination verified for Gmail: ${targetEmail} and SMS: ${smsConfig.phoneNumber}.`,
+      severity: 'INFO',
+      status: 'Sent to Gmail'
+    };
+    setSmsMessages(prev => [testSms, ...prev]);
+    setSmsToast({
+      id: `toast-${Date.now()}`,
+      text: `Test Alert sent to Gmail (${targetEmail}) & SMS (${smsConfig.phoneNumber})`,
+      time: timeStr,
+      phone: smsConfig.phoneNumber,
+      email: targetEmail
+    });
+  };
+
+  const handleSaveSmsSettings = (e: React.FormEvent) => {
+    e.preventDefault();
+    const formattedPhone = formatPhoneNumber(smsPhoneInput) || smsPhoneInput;
+    const cleanEmail = smsEmailInput.trim() || USER_ALERT_GMAIL;
+    const updatedConfig: SmsRecipientConfig = {
+      ...smsConfig,
+      phoneNumber: formattedPhone,
+      recipientEmail: cleanEmail,
+      name: smsNameInput,
+      smsGateway: smsGatewayInput
+    };
+    setSmsConfig(updatedConfig);
+    setSmsPhoneInput(formattedPhone);
+    setSmsEmailInput(cleanEmail);
+    try {
+      localStorage.setItem('leaknova_sms_config', JSON.stringify(updatedConfig));
+    } catch {
+      // ignore
+    }
+    setSmsToast({
+      id: `toast-${Date.now()}`,
+      text: `Alert settings saved — Selected Gmail: ${cleanEmail} | Phone: ${formattedPhone}`,
+      time: 'Just now',
+      phone: formattedPhone,
+      email: cleanEmail
+    });
+  };
+
+  const handleSendManualReply = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!manualSmsText.trim()) return;
+
+    const now = new Date();
+    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const userSms: SmsMessage = {
+      id: `sms-user-${Date.now()}`,
+      timestamp: timeStr,
+      recipientPhone: smsConfig.phoneNumber,
+      recipientName: smsConfig.name,
+      direction: 'INBOUND_REPLY',
+      messageText: manualSmsText.trim(),
+      severity: 'INFO',
+      status: 'Received'
+    };
+
+    setSmsMessages(prev => [userSms, ...prev]);
+    setManualSmsText('');
+  };
+
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const text = e.target?.result as string;
+        const parsed = parseTelemetryCsv(text);
+        if (parsed.length > 0) {
+          const formatted = parsed.map(p => ({
+            time: p.timestamp,
+            actual: p.actualFlowLps,
+            expected: p.expectedFlowLps,
+            pressure: p.pressurePsi
+          }));
+          setCustomDataset(formatted);
+          setCsvUploadFeedback(`Loaded ${parsed.length} real SCADA telemetry intervals from "${file.name}"`);
+        } else {
+          setCsvUploadFeedback('Could not parse valid records. Ensure CSV has Time, Flow, and Pressure columns.');
+        }
+      } catch (err) {
+        setCsvUploadFeedback('Failed to read telemetry file.');
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleExportCsv = () => {
+    const records: TelemetryRecord[] = flowData.map((d, i) => ({
+      id: `tel-${i}`,
+      timestamp: d.time,
+      actualFlowLps: d.actualFlow,
+      expectedFlowLps: d.expectedDemand,
+      pressurePsi: d.pressurePsi,
+      residualAnomalyLps: d.leakAnomaly || 0,
+      zScore: d.zScore || 0,
+      isAnomaly: (d.leakAnomaly || 0) > 0
+    }));
+
+    const csvContent = exportTelemetryToCsv(records);
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `EPANET_Telemetry_${selectedDma.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleResetToBenchmark = () => {
+    setCustomDataset(null);
+    setCsvUploadFeedback(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const waterBalancePieData = [
+    { name: 'Billed Authorized', value: nrwMetric.waterBalance.authorizedConsumptionM3, color: '#0284c7' },
+    { name: 'Apparent Losses', value: nrwMetric.waterBalance.apparentLossesM3, color: '#f59e0b' },
+    { name: 'Real Physical Losses', value: nrwMetric.waterBalance.realLossesM3, color: isSimulating ? '#dc2626' : '#64748b' }
+  ];
+
+  return (
+    <div className="min-h-screen bg-gray-50 text-slate-800 font-sans antialiased flex flex-col relative">
+      {/* Floating Real-Time Gmail & SMS Alert Toast */}
+      {smsToast && (
+        <div className="fixed top-20 right-6 z-50 max-w-md w-full bg-slate-900 text-white rounded-lg shadow-2xl p-4 border border-slate-700 animate-in slide-in-from-top-4 duration-200">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 bg-red-500/20 text-red-400 rounded-full shrink-0">
+                <Mail className="w-4 h-4 animate-pulse" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Gmail &amp; SMS Alert Sent</span>
+                  <span className="text-[10px] text-gray-400">{smsToast.time}</span>
+                </div>
+                <p className="text-xs text-slate-200 font-medium mt-1 leading-snug">
+                  {smsToast.text}
+                </p>
+                <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px]">
+                  <span className="text-blue-300 font-mono">Gmail: {smsToast.email || smsConfig.recipientEmail}</span>
+                  <span className="text-gray-400">SMS: {smsToast.phone}</span>
+                  <button
+                    onClick={() => {
+                      setShowSmsModal(true);
+                      setSmsModalTab('phone_preview');
+                    }}
+                    className="text-emerald-400 hover:text-emerald-300 font-semibold underline cursor-pointer"
+                  >
+                    View Alert Inbox
+                  </button>
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={() => setSmsToast(null)}
+              className="text-gray-400 hover:text-white p-1 cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Top Header */}
+      <header className="sticky top-0 z-30 bg-white border-b border-gray-200 px-6 py-3.5 shadow-xs">
+        <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-blue-50 text-blue-700 rounded-lg border border-blue-100 flex items-center justify-center shadow-xs">
+              <Droplets className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xl font-extrabold text-blue-700 tracking-tight">LeakNova</span>
+                  <span className="text-gray-300 font-light">|</span>
+                  <span className="text-sm font-semibold text-gray-800">Smart City Water Monitor</span>
+                </div>
+                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-800 border border-blue-200">
+                  EPANET 2.2 Core
+                </span>
+                <span className="hidden xl:inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono bg-gray-100 text-gray-600 border border-gray-200" title="Project ID: cqvdsywibtbdonsuuwpc">
+                  PID: cqvdsywibtbdonsuuwpc
+                </span>
+                {customDataset ? (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-200">
+                    <Database className="w-3.5 h-3.5" />
+                    USER SCADA INGESTED
+                  </span>
+                ) : isSimulating ? (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-700 border border-red-200 animate-pulse">
+                    <span className="w-2 h-2 rounded-full bg-red-600"></span>
+                    1-MIN LEAK: {activeLeakScenario?.nodeId || 'J-108'} ({leakSecondsRemaining}s left)
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                    PIPES NORMAL (INITIALIZING)
+                  </span>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 font-medium mt-0.5">
+                <span>Auto 1-Min Single Leak Rotation &amp; Gmail Alert Dispatch</span>
+                <span className="text-gray-300">•</span>
+                <span className="font-mono text-[11px] text-gray-400">UUID: bd0f6dee-0647-4d81-9582-0929186cd9e4</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Action, Selected Gmail, SMS Alerts, Supabase Cloud, and DMA selector */}
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/* Selected Gmail Selector */}
+            <div className="flex items-center gap-1.5 text-xs bg-red-50/80 px-2.5 py-1.5 rounded-md border border-red-200 shadow-2xs">
+              <Mail className="w-3.5 h-3.5 text-red-600 shrink-0" />
+              <span className="font-semibold text-red-900 hidden sm:inline">Gmail:</span>
+              <select
+                aria-label="Select Gmail recipient for leak alerts"
+                value={GMAIL_RECIPIENT_OPTIONS.some(o => o.email === smsConfig.recipientEmail) ? smsConfig.recipientEmail : 'custom'}
+                onChange={(e) => {
+                  if (e.target.value === 'custom') {
+                    setShowSmsModal(true);
+                    setSmsModalTab('recipient_settings');
+                  } else {
+                    handleSelectGmailQuick(e.target.value);
+                  }
+                }}
+                className="bg-transparent text-red-950 font-mono font-semibold text-xs focus:outline-hidden cursor-pointer max-w-[205px] truncate"
+              >
+                {GMAIL_RECIPIENT_OPTIONS.map((opt) => (
+                  <option key={opt.email} value={opt.email}>
+                    {opt.email}
+                  </option>
+                ))}
+                {!GMAIL_RECIPIENT_OPTIONS.some(o => o.email === smsConfig.recipientEmail) && (
+                  <option value="custom">{smsConfig.recipientEmail}</option>
+                )}
+                <option value="custom">+ Custom Gmail Address...</option>
+              </select>
+            </div>
+
+            {/* Notification / Gmail & SMS Option Button */}
+            <button
+              onClick={() => setShowSmsModal(true)}
+              aria-label="Open Gmail & SMS Notifications Settings"
+              className="px-3 py-1.5 rounded-md font-semibold text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs relative"
+            >
+              <Smartphone className="w-3.5 h-3.5 text-emerald-700" />
+              <span>Alerts Inbox ({smsMessages.length})</span>
+              <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse"></span>
+            </button>
+
+            {/* Supabase Cloud Database Connection Button */}
+            <button
+              onClick={() => setShowSupabaseModal(true)}
+              aria-label="Open Supabase Cloud Database Integration"
+              className="px-3 py-1.5 rounded-md font-semibold text-xs bg-slate-900 hover:bg-slate-800 text-white flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs border border-slate-700"
+              title="Supabase: atgbqxmergxaaazrhbpr (ap-northeast-1)"
+            >
+              <div className={`w-2 h-2 rounded-full ${supabaseStatus?.connected ? 'bg-emerald-400' : 'bg-amber-400'} animate-pulse`}></div>
+              <Database className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Supabase</span>
+            </button>
+
+            <button
+              onClick={() => setShowDataDrawer(true)}
+              aria-label="Open Battledim & SCADA Ingestion"
+              className="px-3 py-1.5 rounded-md font-medium text-xs bg-white hover:bg-gray-50 text-gray-700 border border-gray-300 flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+            >
+              <Table className="w-3.5 h-3.5 text-blue-600" />
+              <span>Battledim ({flowData.length} pts)</span>
+            </button>
+
+            <div className="hidden sm:flex items-center gap-2 text-xs text-gray-600 bg-gray-50 px-3 py-1.5 rounded-md border border-gray-200">
+              <Compass className="w-4 h-4 text-gray-400" />
+              <span className="font-medium text-gray-700">Sector:</span>
+              <select
+                aria-label="District Metered Area selection"
+                value={selectedDma}
+                onChange={(e) => setSelectedDma(e.target.value)}
+                className="bg-transparent text-gray-800 font-semibold focus:outline-hidden cursor-pointer"
+              >
+                <option value="DMA-04 (Eastern Sector)">DMA-04 (Eastern Sector)</option>
+                <option value="DMA-01 (Downtown Core)">DMA-01 (Downtown Core)</option>
+                <option value="DMA-07 (West Industrial)">DMA-07 (West Industrial)</option>
+              </select>
+            </div>
+
+          </div>
+        </div>
+
+        {/* Dashboard Navigation Tabs */}
+        <div className="max-w-7xl mx-auto mt-3 pt-2 border-t border-gray-100 flex items-center gap-2 overflow-x-auto pb-1">
+          <button
+            onClick={() => setActiveTab('live_monitoring')}
+            className={`px-3.5 py-1.5 rounded-md text-xs font-semibold flex items-center gap-2 transition-colors cursor-pointer shrink-0 ${
+              activeTab === 'live_monitoring'
+                ? 'bg-blue-50 text-blue-700 border border-blue-200 shadow-2xs'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+            }`}
+          >
+            <Activity className="w-4 h-4" />
+            <span>Hydraulic Overview & Simulation</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('nrw_audit')}
+            className={`px-3.5 py-1.5 rounded-md text-xs font-semibold flex items-center gap-2 transition-colors cursor-pointer shrink-0 ${
+              activeTab === 'nrw_audit'
+                ? 'bg-blue-50 text-blue-700 border border-blue-200 shadow-2xs'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+            }`}
+          >
+            <PieChartIcon className="w-4 h-4" />
+            <span>NRW & AWWA Water Audit</span>
+            {isSimulating && (
+              <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse"></span>
+            )}
+          </button>
+
+          <button
+            onClick={() => setActiveTab('sensor_placement')}
+            className={`px-3.5 py-1.5 rounded-md text-xs font-semibold flex items-center gap-2 transition-colors cursor-pointer shrink-0 ${
+              activeTab === 'sensor_placement'
+                ? 'bg-blue-50 text-blue-700 border border-blue-200 shadow-2xs'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+            }`}
+          >
+            <Radio className="w-4 h-4" />
+            <span>Sensor Placement & Genetic Optimizer</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('work_orders')}
+            className={`px-3.5 py-1.5 rounded-md text-xs font-semibold flex items-center gap-2 transition-colors cursor-pointer shrink-0 ${
+              activeTab === 'work_orders'
+                ? 'bg-blue-50 text-blue-700 border border-blue-200 shadow-2xs'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+            }`}
+          >
+            <Truck className="w-4 h-4" />
+            <span>Work Orders & Dispatch</span>
+            {isSimulating && (
+              <span className="px-1.5 py-0.2 rounded text-[10px] bg-red-100 text-red-700 font-bold">
+                1 Alert
+              </span>
+            )}
+          </button>
+        </div>
+      </header>
+
+      {/* Main Container */}
+      <main className="max-w-7xl mx-auto w-full p-4 md:p-6 space-y-6 flex-1">
+        {/* Metric Cards Row */}
+        <section aria-label="Key Performance Indicators" className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="bg-white rounded-lg p-4 border border-gray-200 shadow-xs">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Inflow Demand</span>
+              <Waves className={`w-4 h-4 ${isSimulating ? 'text-red-500' : 'text-blue-500'}`} />
+            </div>
+            <div className="mt-2 flex items-baseline gap-2">
+              <span className="text-2xl font-bold text-gray-900">
+                {(flowData.find(d => d.time === '14:00')?.actualFlow || 68.9).toFixed(1)}
+              </span>
+              <span className="text-xs font-medium text-gray-500">L/s</span>
+            </div>
+            <div className="mt-1 flex items-center text-xs">
+              {isSimulating ? (
+                <span className="text-red-600 font-medium flex items-center gap-0.5">
+                  <TrendingUp className="w-3.5 h-3.5" /> +{activeLeakScenario?.leakSizeLps || 85} L/s rupture ({activeLeakScenario?.nodeId || 'J-108'})
+                </span>
+              ) : (
+                <span className="text-gray-500 font-medium flex items-center gap-0.5">
+                  <Activity className="w-3.5 h-3.5 text-gray-400" /> Diurnal consumer baseline
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="bg-white rounded-lg p-4 border border-gray-200 shadow-xs">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">AWWA NRW Ratio</span>
+              <TrendingDown className={`w-4 h-4 ${isSimulating ? 'text-red-500' : 'text-emerald-500'}`} />
+            </div>
+            <div className="mt-2 flex items-baseline gap-2">
+              <span className={`text-2xl font-bold ${isSimulating ? 'text-red-600' : 'text-gray-900'}`}>
+                {nrwMetric.nrwPercentage.toFixed(1)}%
+              </span>
+              <span className="text-xs font-medium text-gray-500">of bulk supply</span>
+            </div>
+            <div className="mt-1 flex items-center text-xs font-medium">
+              <span className={isSimulating ? 'text-red-600' : 'text-emerald-600'}>
+                ILI: {nrwMetric.waterBalance.infrastructureLeakIndexIli} ({isSimulating ? 'Critical' : 'Optimal'})
+              </span>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-lg p-4 border border-gray-200 shadow-xs">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Hazen-Williams Head</span>
+              <Gauge className={`w-4 h-4 ${isSimulating ? 'text-amber-500' : 'text-indigo-500'}`} />
+            </div>
+            <div className="mt-2 flex items-baseline gap-2">
+              <span className="text-2xl font-bold text-gray-900">
+                {(flowData.find(d => d.time === '14:00')?.pressurePsi || 64.7).toFixed(1)}
+              </span>
+              <span className="text-xs font-medium text-gray-500">psi</span>
+            </div>
+            <div className="mt-1 flex items-center text-xs">
+              {isSimulating ? (
+                <span className="text-amber-600 font-medium flex items-center gap-0.5">
+                  <TrendingDown className="w-3.5 h-3.5" /> -18.4 psi gradient deficit
+                </span>
+              ) : (
+                <span className="text-emerald-600 font-medium flex items-center gap-0.5">
+                  <CheckCircle2 className="w-3.5 h-3.5" /> Optimal hydraulic head
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="bg-white rounded-lg p-4 border border-gray-200 shadow-xs">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Sensor Coverage</span>
+              <Radio className="w-4 h-4 text-emerald-600" />
+            </div>
+            <div className="mt-2 flex items-baseline gap-2">
+              <span className="text-2xl font-bold text-gray-900">6 / 6</span>
+              <span className="text-xs font-medium text-gray-500">Loggers Active</span>
+            </div>
+            <div className="mt-1 flex items-center text-xs text-gray-500 font-medium">
+              <span>98.4% Network Observability</span>
+            </div>
+          </div>
+        </section>
+
+        {/* TAB 1: Live Monitoring & EPANET Simulation (Core Dashboard) */}
+        {activeTab === 'live_monitoring' && (
+          <div className="space-y-6">
+            <section aria-label="Hydraulic Visualizations" className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Panel 1: Network Map (Localization) - Upgraded with 3D Isometric CAD Digital Twin */}
+              <div className="bg-white rounded-lg border border-gray-200 shadow-xs flex flex-col overflow-hidden">
+                <div className="px-5 py-3.5 border-b border-gray-100 flex flex-wrap items-center justify-between gap-3 bg-white">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-base font-bold text-gray-900">Panel 1: Network Map (Localization)</h2>
+                      <span className="text-[10px] px-2 py-0.5 rounded font-mono font-bold bg-blue-50 text-blue-700 border border-blue-200 uppercase tracking-wide">
+                        {cadViewMode === 'interactive_3d'
+                          ? '3D Animated Twin'
+                          : cadViewMode === 'isometric_3d'
+                          ? '3D CAD Blueprint'
+                          : '2D Schematic Graph'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      {cadViewMode === 'interactive_3d'
+                        ? 'Interactive 3D WebGL hydraulic network: 360° orbit rotation, zoom, animated water flow & leak fountain'
+                        : cadViewMode === 'isometric_3d'
+                        ? 'High-fidelity isometric CAD engineering model with real-time pressure & rupture telemetry'
+                        : 'EPANET industrial piping network with optimized sensor placements'}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    {/* View Switcher: Interactive 3D vs 3D CAD Twin vs 2D Schematic */}
+                    <div className="flex items-center gap-0.5 bg-gray-100 p-0.5 rounded-lg border border-gray-200 text-xs">
+                      <button
+                        onClick={() => setCadViewMode('interactive_3d')}
+                        className={`px-2.5 py-1 rounded-md font-semibold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                          cadViewMode === 'interactive_3d'
+                            ? 'bg-white text-blue-700 shadow-2xs font-bold'
+                            : 'text-gray-600 hover:text-gray-900'
+                        }`}
+                        title="Interactive 3D WebGL Digital Twin (Rotate, Zoom, Animate)"
+                      >
+                        <Orbit className="w-3.5 h-3.5 text-blue-600" />
+                        <span>Interactive 3D</span>
+                      </button>
+                      <button
+                        onClick={() => setCadViewMode('isometric_3d')}
+                        className={`px-2.5 py-1 rounded-md font-semibold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                          cadViewMode === 'isometric_3d'
+                            ? 'bg-white text-blue-700 shadow-2xs'
+                            : 'text-gray-600 hover:text-gray-900'
+                        }`}
+                        title="Switch to 3D Isometric CAD Digital Twin"
+                      >
+                        <Box className="w-3.5 h-3.5" />
+                        <span>CAD Blueprint</span>
+                      </button>
+                      <button
+                        onClick={() => setCadViewMode('schematic_2d')}
+                        className={`px-2.5 py-1 rounded-md font-semibold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                          cadViewMode === 'schematic_2d'
+                            ? 'bg-white text-blue-700 shadow-2xs'
+                            : 'text-gray-600 hover:text-gray-900'
+                        }`}
+                        title="Switch to 2D EPANET Topology Schematic"
+                      >
+                        <Layers className="w-3.5 h-3.5" />
+                        <span>2D Schematic</span>
+                      </button>
+                    </div>
+
+                    {isSimulating ? (
+                      isolatedValves.includes('V-108A') && isolatedValves.includes('V-108B') ? (
+                        <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-300">
+                          <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>VALVES ISOLATED • CONTAINED</span>
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-semibold bg-red-50 text-red-700 border border-red-200">
+                          <span className="relative flex h-2 w-2">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-red-600"></span>
+                          </span>
+                          RUPTURE LOCALIZED ({activeLeakScenario?.nodeId || 'J-108'})
+                        </span>
+                      )
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                        Network Nominal
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="p-4 bg-slate-50/50 flex-1 flex flex-col justify-between">
+                  {cadViewMode === 'interactive_3d' ? (
+                    /* Interactive 3D WebGL Digital Twin Viewport */
+                    <div className="space-y-3">
+                      <Epanet3DViewer
+                        isSimulating={isSimulating}
+                        activeLeakScenario={activeLeakScenario}
+                        onRandomizeLeak={handleRandomizeLeakLocation}
+                        dispatchedTeams={selectedRepairTeams}
+                        reportedLeakageLevel={reportedLeakageLevel}
+                        isolatedValves={isolatedValves}
+                        onToggleValve={toggleValveIsolation}
+                        selectedHotspotId={selectedHotspot?.id}
+                        onSelectHotspot={setSelectedHotspot}
+                        showSensors={cadShowSensors}
+                        showValves={cadShowValves}
+                        showStress={cadShowStress}
+                        showDimensions={cadShowDimensions}
+                      />
+                    </div>
+                  ) : cadViewMode === 'isometric_3d' ? (
+                    /* 3D Isometric CAD Digital Twin Viewport */
+                    <div className="space-y-3">
+                      {/* CAD Viewport Toolbar */}
+                      <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-[11px] font-semibold text-gray-500 uppercase">Layers:</span>
+                          <button
+                            onClick={() => setCadShowSensors(!cadShowSensors)}
+                            className={`px-2 py-0.5 rounded text-[11px] font-medium border cursor-pointer transition-colors ${
+                              cadShowSensors
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-300 font-semibold'
+                                : 'bg-gray-100 text-gray-500 border-gray-200 opacity-60'
+                            }`}
+                          >
+                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1"></span>
+                            Sensors (6)
+                          </button>
+                          <button
+                            onClick={() => setCadShowValves(!cadShowValves)}
+                            className={`px-2 py-0.5 rounded text-[11px] font-medium border cursor-pointer transition-colors ${
+                              cadShowValves
+                                ? 'bg-amber-50 text-amber-800 border-amber-300 font-semibold'
+                                : 'bg-gray-100 text-gray-500 border-gray-200 opacity-60'
+                            }`}
+                          >
+                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 mr-1"></span>
+                            Valves (2)
+                          </button>
+                          <button
+                            onClick={() => setCadShowStress(!cadShowStress)}
+                            className={`px-2 py-0.5 rounded text-[11px] font-medium border cursor-pointer transition-colors ${
+                              cadShowStress
+                                ? 'bg-red-50 text-red-700 border-red-300 font-semibold'
+                                : 'bg-gray-100 text-gray-500 border-gray-200 opacity-60'
+                            }`}
+                          >
+                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-500 mr-1"></span>
+                            Stress & Alerts
+                          </button>
+                          <button
+                            onClick={() => setCadShowDimensions(!cadShowDimensions)}
+                            className={`px-2 py-0.5 rounded text-[11px] font-medium border cursor-pointer transition-colors ${
+                              cadShowDimensions
+                                ? 'bg-blue-50 text-blue-700 border-blue-300 font-semibold'
+                                : 'bg-gray-100 text-gray-500 border-gray-200 opacity-60'
+                            }`}
+                          >
+                            Dimensions & Specs
+                          </button>
+                        </div>
+
+                        {/* Zoom Controls */}
+                        <div className="flex items-center gap-1 bg-white border border-gray-200 rounded-md p-0.5 shadow-2xs">
+                          <button
+                            onClick={() => setCadZoom(prev => Math.min(1.4, prev + 0.1))}
+                            className="p-1 text-gray-600 hover:text-gray-900 rounded cursor-pointer"
+                            title="Zoom In"
+                          >
+                            <ZoomIn className="w-3.5 h-3.5" />
+                          </button>
+                          <span className="text-[10px] font-mono text-gray-600 px-1">
+                            {Math.round(cadZoom * 100)}%
+                          </span>
+                          <button
+                            onClick={() => setCadZoom(prev => Math.max(0.9, prev - 0.1))}
+                            className="p-1 text-gray-600 hover:text-gray-900 rounded cursor-pointer"
+                            title="Zoom Out"
+                          >
+                            <ZoomOut className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => setCadZoom(1.0)}
+                            className="px-1.5 py-0.5 text-[10px] text-gray-500 hover:text-gray-800 rounded font-semibold cursor-pointer border-l border-gray-100"
+                            title="Reset Zoom"
+                          >
+                            Reset
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Main CAD Interactive Canvas */}
+                      <div className="relative w-full aspect-16/10 rounded-lg overflow-hidden bg-slate-900 border border-gray-300 shadow-inner group select-none">
+                        {/* Background CAD 3D Isometric Render */}
+                        <img
+                          src={ISOMETRIC_CAD_IMAGE_URL}
+                          alt="EPANET 3D Isometric Industrial Piping Network Model"
+                          className="w-full h-full object-cover transition-transform duration-200 origin-center"
+                          style={{ transform: `scale(${cadZoom})` }}
+                        />
+
+                        {/* Subtle blueprint grid overlay */}
+                        <div className="absolute inset-0 pointer-events-none opacity-20 bg-[linear-gradient(to_right,#ffffff15_1px,transparent_1px),linear-gradient(to_bottom,#ffffff15_1px,transparent_1px)] bg-[size:30px_30px]" />
+
+                        {/* 3D CAD Orientation Triad in Top-Right */}
+                        <div className="absolute top-2.5 right-2.5 bg-slate-900/85 backdrop-blur-xs border border-slate-700/80 text-white rounded p-1.5 shadow-md flex items-center gap-2 pointer-events-none">
+                          <div className="w-7 h-7 border border-slate-600 rounded bg-slate-800 flex flex-col items-center justify-center text-[8px] font-mono font-bold text-slate-300">
+                            <span>TOP</span>
+                            <span className="text-[6px] text-cyan-400">ISO 30°</span>
+                          </div>
+                          <div className="text-[9px] font-mono leading-tight">
+                            <div className="text-emerald-400 font-bold">EPANET CAD</div>
+                            <div className="text-gray-400">DMA-04 Loop</div>
+                          </div>
+                        </div>
+
+                        {/* Interactive Hotspots Overlaid on CAD Piping */}
+                        {ISOMETRIC_HOTSPOTS.map((hotspot) => {
+                          const isSelected = selectedHotspot?.id === hotspot.id;
+                          const isActiveLeakNode = isSimulating && activeLeakScenario?.nodeId === hotspot.id;
+                          const isValve = hotspot.type === 'valve';
+                          const isSensor = hotspot.type === 'sensor';
+                          const isPump = hotspot.type === 'pump';
+                          const isIsolated = isolatedValves.includes(hotspot.id);
+
+                          if (isSensor && !cadShowSensors && !isActiveLeakNode) return null;
+                          if (isValve && !cadShowValves) return null;
+
+                          return (
+                            <div
+                              key={hotspot.id}
+                              style={{ left: `${hotspot.xPct}%`, top: `${hotspot.yPct}%` }}
+                              className="absolute -translate-x-1/2 -translate-y-1/2 z-20 cursor-pointer"
+                              onClick={() => setSelectedHotspot(hotspot)}
+                            >
+                              {/* ACTIVE RANDOM RUPTURE NODE */}
+                              {isActiveLeakNode ? (
+                                <div className="relative flex items-center justify-center">
+                                  <span className="absolute w-12 h-12 rounded-full bg-red-500 opacity-60 animate-ping pointer-events-none" />
+                                  <span className="absolute w-8 h-8 rounded-full bg-red-600/40 animate-pulse pointer-events-none" />
+                                  <button
+                                    className="relative p-1.5 bg-red-600 text-white rounded-full shadow-lg border-2 border-white flex items-center justify-center hover:scale-110 transition-transform cursor-pointer"
+                                    title={`Click to inspect Node ${hotspot.id} Rupture Telemetry`}
+                                  >
+                                    <AlertTriangle className="w-4 h-4 fill-white text-red-600" />
+                                  </button>
+
+                                  {/* Floating HUD Callout over rupture */}
+                                  <div className="absolute -top-16 left-1/2 -translate-x-1/2 bg-red-950/95 text-white border border-red-500 px-2.5 py-1 rounded shadow-xl whitespace-nowrap text-[10px] pointer-events-none animate-bounce">
+                                    <div className="font-extrabold text-red-300 flex items-center gap-1">
+                                      <span className="w-2 h-2 rounded-full bg-red-500"></span>
+                                      LEAK DETECTED: {hotspot.id} ({activeLeakScenario?.leakSizeLps || 85} L/s)
+                                    </div>
+                                    <div className="text-[9px] text-gray-200 font-mono">
+                                      P: {activeLeakScenario?.pressureSimPsi || 44.6} psi (-{activeLeakScenario?.pressureDropPsi || 18.4}) • {activeLeakScenario?.locationName}
+                                    </div>
+                                    <div className="w-2 h-2 bg-red-950 border-r border-b border-red-500 transform rotate-45 mx-auto -mb-2 mt-0.5"></div>
+                                  </div>
+                                </div>
+                              ) : isValve ? (
+                                /* ISOLATION VALVES V-108A & V-108B */
+                                <div className="relative group/valve">
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      toggleValveIsolation(hotspot.id);
+                                    }}
+                                    className={`px-1.5 py-0.5 rounded shadow-md text-[9px] font-bold flex items-center gap-1 border border-white cursor-pointer transition-transform hover:scale-110 ${
+                                      isIsolated
+                                        ? 'bg-amber-500 text-slate-900 ring-2 ring-amber-300'
+                                        : 'bg-emerald-600 text-white'
+                                    }`}
+                                    title={`Click to toggle ${hotspot.id} Isolation`}
+                                  >
+                                    <Wrench className="w-2.5 h-2.5" />
+                                    <span>{hotspot.id}</span>
+                                    <span className="text-[7px] uppercase opacity-90">
+                                      {isIsolated ? 'CLOSED' : 'OPEN'}
+                                    </span>
+                                  </button>
+                                </div>
+                              ) : isSensor ? (
+                                /* SENSORS S-01 to S-06 */
+                                <div className="relative group/sensor">
+                                  <button
+                                    className={`px-1.5 py-0.5 rounded-full shadow-md text-[9px] font-mono font-bold flex items-center gap-1 border border-white cursor-pointer transition-transform hover:scale-110 ${
+                                      isSelected
+                                        ? 'bg-emerald-500 text-white ring-2 ring-white scale-110'
+                                        : 'bg-emerald-600/90 text-white'
+                                    }`}
+                                    title={`${hotspot.label} • Click to inspect`}
+                                  >
+                                    <Radio className="w-2.5 h-2.5" />
+                                    <span>{hotspot.id}</span>
+                                  </button>
+                                </div>
+                              ) : isPump ? (
+                                /* BOOSTER PUMP PS-01 */
+                                <div className="relative">
+                                  <button
+                                    className="px-2 py-0.5 rounded bg-blue-600 text-white font-mono text-[9px] font-bold flex items-center gap-1 shadow-md border border-white hover:scale-105 cursor-pointer"
+                                    title="Booster Pump PS-01 • 35.5 kW"
+                                  >
+                                    <Gauge className="w-2.5 h-2.5" />
+                                    <span>PS-01</span>
+                                  </button>
+                                </div>
+                              ) : (
+                                /* JUNCTIONS J-102, J-108 & RESERVOIR R-1 */
+                                <button
+                                  className={`px-1.5 py-0.5 rounded text-[8.5px] font-mono font-semibold border border-white/80 shadow-xs cursor-pointer ${
+                                    isSelected
+                                      ? 'bg-blue-600 text-white ring-2 ring-blue-300'
+                                      : 'bg-slate-800/90 text-slate-200'
+                                  }`}
+                                >
+                                  {hotspot.id}
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })}
+
+                        {/* Engineering Dimensions Overlay (CAD Blueprint Specs) */}
+                        {cadShowDimensions && (
+                          <div className="absolute inset-0 pointer-events-none text-[9px] font-mono text-cyan-200/90">
+                            <div className="absolute bottom-3 right-4 bg-slate-900/80 px-2 py-1 rounded border border-cyan-800/60">
+                              <span>Main Arterial: 16" (406mm) DI Class 52 • 250 psi Rating</span>
+                            </div>
+                            <div className="absolute top-4 left-4 bg-slate-900/80 px-2 py-1 rounded border border-cyan-800/60">
+                              <span>Bulk Feed: 24" Transmission • C-Factor 130</span>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Bottom-Left Legend */}
+                        <div className="absolute bottom-2.5 left-2.5 bg-slate-900/90 backdrop-blur-xs p-2 rounded border border-slate-700 text-[10px] text-gray-300 space-y-1 shadow-lg pointer-events-none">
+                          <div className="font-semibold text-white text-[10px] border-b border-slate-800 pb-0.5">
+                            CAD Network Legend
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="w-3.5 h-1.5 bg-sky-500 rounded-xs"></span>
+                            <span>16"-24" Arterial Pipe (Blue)</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                            <span className="text-emerald-400 font-medium">S1-S6 Sensors</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+                            <span>V-108A/B Isolation Valves</span>
+                          </div>
+                          {isSimulating && (
+                            <div className="flex items-center gap-2">
+                              <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse"></span>
+                              <span className="text-red-400 font-bold">Rupture Zone ({activeLeakScenario?.nodeId || 'J-108'})</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    /* 2D Schematic Vector Graph */
+                    <div className="relative w-full aspect-4/3 bg-white rounded-lg border border-gray-200 shadow-2xs overflow-hidden">
+                      <svg className="absolute inset-0 w-full h-full pointer-events-none" xmlns="http://www.w3.org/2000/svg">
+                        <defs>
+                          <pattern id="smallGrid" width="20" height="20" patternUnits="userSpaceOnUse">
+                            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#f1f5f9" strokeWidth="1" />
+                          </pattern>
+                        </defs>
+                        <rect width="100%" height="100%" fill="url(#smallGrid)" />
+                      </svg>
+
+                      <svg viewBox="0 0 760 400" className="w-full h-full relative z-10" aria-label="EPANET Hydraulic Network Map">
+                        <defs>
+                          <linearGradient id="mainPipeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                            <stop offset="0%" stopColor="#0284c7" />
+                            <stop offset="100%" stopColor="#0ea5e9" />
+                          </linearGradient>
+                          <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+                            <feGaussianBlur stdDeviation="3" result="blur" />
+                            <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                          </filter>
+                        </defs>
+
+                        {PIPE_SEGMENTS.map((pipe, idx) => {
+                          const fromNode = NETWORK_NODES.find(n => n.id === pipe.from);
+                          const toNode = NETWORK_NODES.find(n => n.id === pipe.to);
+                          if (!fromNode || !toNode) return null;
+                          const leakNodeId = activeLeakScenario?.nodeId || 'J-108';
+                          const isNearLeak = isSimulating && (pipe.from === leakNodeId || pipe.to === leakNodeId);
+
+                          return (
+                            <g key={`pipe-${idx}`}>
+                              <line x1={fromNode.x} y1={fromNode.y} x2={toNode.x} y2={toNode.y} stroke="#cbd5e1" strokeWidth={pipe.strokeWidth + 3} strokeLinecap="round" />
+                              <line x1={fromNode.x} y1={fromNode.y} x2={toNode.x} y2={toNode.y} stroke={isNearLeak ? '#f87171' : 'url(#mainPipeGrad)'} strokeWidth={pipe.strokeWidth} strokeLinecap="round" strokeDasharray={isNearLeak ? '6 3' : undefined} />
+                              <circle cx={(fromNode.x + toNode.x) / 2} cy={(fromNode.y + toNode.y) / 2} r={2} fill={isNearLeak ? '#dc2626' : '#0369a1'} />
+                            </g>
+                          );
+                        })}
+
+                        {NETWORK_NODES.map((node) => {
+                          const isLeak = isSimulating && activeLeakScenario?.nodeId === node.id;
+                          const isSelected = selectedNode?.id === node.id;
+
+                          if (isLeak) {
+                            return (
+                              <g key={node.id} className="cursor-pointer" onClick={() => setSelectedNode(node)} role="button" tabIndex={0} aria-label={`Active Leak Node ${node.label}`}>
+                                <circle cx={node.x} cy={node.y} r={24} fill="none" stroke="#ef4444" strokeWidth={2} className="animate-ping origin-center" style={{ transformOrigin: `${node.x}px ${node.y}px` }} />
+                                <circle cx={node.x} cy={node.y} r={16} fill="#fee2e2" stroke="#dc2626" strokeWidth={2} opacity={0.8} />
+                                <circle cx={node.x} cy={node.y} r={9} fill="#dc2626" stroke="#ffffff" strokeWidth={2} filter="url(#glow)" />
+                                <g transform={`translate(${node.x - 58}, ${node.y - 48})`}>
+                                  <rect width={116} height={24} rx={4} fill="#dc2626" stroke="#b91c1c" strokeWidth={1} />
+                                  <text x={58} y={16} textAnchor="middle" fill="#ffffff" fontSize="10" fontWeight="bold">
+                                    LEAK: {node.id} ({activeLeakScenario?.leakSizeLps || 85} L/s)
+                                  </text>
+                                  <polygon points="53,24 63,24 58,29" fill="#dc2626" />
+                                </g>
+                              </g>
+                            );
+                          }
+
+                          if (node.type === 'reservoir') {
+                            return (
+                              <g key={node.id} className="cursor-pointer" onClick={() => setSelectedNode(node)} role="button" tabIndex={0} aria-label={`Reservoir ${node.label}`}>
+                                <rect x={node.x - 22} y={node.y - 20} width={44} height={40} rx={6} fill="#0284c7" stroke="#0369a1" strokeWidth={2} />
+                                <text x={node.x} y={node.y + 4} textAnchor="middle" fill="#ffffff" fontSize="11" fontWeight="bold">R-1</text>
+                                <text x={node.x} y={node.y - 26} textAnchor="middle" fill="#334155" fontSize="10" fontWeight="600">Main Reservoir</text>
+                              </g>
+                            );
+                          }
+
+                          if (node.type === 'pump') {
+                            return (
+                              <g key={node.id} className="cursor-pointer" onClick={() => setSelectedNode(node)} role="button" tabIndex={0} aria-label={`Pump station ${node.label}`}>
+                                <circle cx={node.x} cy={node.y} r={15} fill="#0ea5e9" stroke="#0284c7" strokeWidth={2} />
+                                <text x={node.x} y={node.y + 3.5} textAnchor="middle" fill="#ffffff" fontSize="10" fontWeight="bold">PS</text>
+                                <text x={node.x} y={node.y + 28} textAnchor="middle" fill="#475569" fontSize="9" fontWeight="500">PS-01</text>
+                              </g>
+                            );
+                          }
+
+                          if (node.type === 'sensor') {
+                            return (
+                              <g key={node.id} className="cursor-pointer group" onClick={() => setSelectedNode(node)} role="button" tabIndex={0} aria-label={`Optimized Sensor ${node.label}`}>
+                                <circle cx={node.x} cy={node.y} r={isSelected ? 11 : 9} fill="#10b981" stroke="#ffffff" strokeWidth={2.5} className="shadow-sm transition-all" />
+                                <circle cx={node.x} cy={node.y} r={4} fill="#065f46" />
+                                <text x={node.x} y={node.y - 13} textAnchor="middle" fill="#047857" fontSize="9.5" fontWeight="bold">{node.id}</text>
+                              </g>
+                            );
+                          }
+
+                          return (
+                            <g key={node.id} className="cursor-pointer" onClick={() => setSelectedNode(node)} role="button" tabIndex={0} aria-label={`Junction node ${node.label}`}>
+                              <circle cx={node.x} cy={node.y} r={isSelected ? 7 : 5} fill={isSelected ? '#2563eb' : '#64748b'} stroke="#ffffff" strokeWidth={2} />
+                              <text x={node.x} y={node.y + 16} textAnchor="middle" fill="#64748b" fontSize="9" fontWeight="500">{node.id}</text>
+                            </g>
+                          );
+                        })}
+                      </svg>
+
+                      <div className="absolute bottom-2 left-2 bg-white/95 backdrop-blur-xs p-2 rounded border border-gray-200 text-[10px] text-gray-600 space-y-1 shadow-2xs">
+                        <div className="font-semibold text-gray-800 text-[11px] mb-1">Network Legend</div>
+                        <div className="flex items-center gap-2">
+                          <span className="w-4 h-1 bg-sky-500 rounded-sm"></span>
+                          <span>Pipes (Cyan/Blue Strokes)</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 border border-white"></span>
+                          <span className="font-medium text-emerald-800">Optimized Sensors (S1-S6)</span>
+                        </div>
+                        {isSimulating && (
+                          <div className="flex items-center gap-2">
+                            <span className="w-2.5 h-2.5 rounded-full bg-red-600 border border-white animate-pulse"></span>
+                            <span className="font-semibold text-red-700">Localized Leak (Node {activeLeakScenario?.nodeId || 'J-108'})</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Component Inspector & Telemetry Bar */}
+                  <div className="mt-3 bg-white p-3.5 rounded-md border border-gray-200 text-xs shadow-2xs">
+                    {selectedHotspot ? (
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div className="space-y-0.5">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-gray-900 text-sm">
+                              {isSimulating && activeLeakScenario?.nodeId === selectedHotspot.id
+                                ? `${activeLeakScenario.label} (Active Rupture)`
+                                : selectedHotspot.label}
+                            </span>
+                            <span className="px-2 py-0.2 rounded text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+                              {selectedHotspot.subType || selectedHotspot.type}
+                            </span>
+                            {isSimulating && activeLeakScenario?.nodeId === selectedHotspot.id && (
+                              <span className="px-2 py-0.2 rounded text-[10px] font-bold bg-red-100 text-red-700 animate-pulse">
+                                RUPTURE ACTIVE
+                              </span>
+                            )}
+                            {selectedHotspot.type === 'valve' && (
+                              <span className={`px-2 py-0.2 rounded text-[10px] font-bold ${
+                                isolatedValves.includes(selectedHotspot.id)
+                                  ? 'bg-amber-100 text-amber-800'
+                                  : 'bg-emerald-100 text-emerald-800'
+                              }`}>
+                                {isolatedValves.includes(selectedHotspot.id) ? 'VALVE ISOLATED' : 'VALVE OPEN'}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-gray-500 font-mono">
+                            Specification: {isSimulating && activeLeakScenario?.nodeId === selectedHotspot.id ? activeLeakScenario.spec : selectedHotspot.spec}
+                          </div>
+                          <div className="text-gray-600 text-[11px]">
+                            {isSimulating && activeLeakScenario?.nodeId === selectedHotspot.id
+                              ? activeLeakScenario.description
+                              : selectedHotspot.description}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <div className="flex items-center gap-2 font-mono">
+                            <div className="bg-gray-50 border border-gray-200 px-2.5 py-1 rounded text-center">
+                              <span className="text-[9px] text-gray-400 block">PRESSURE</span>
+                              <span className="font-bold text-gray-800">
+                                {isSimulating && activeLeakScenario?.nodeId === selectedHotspot.id
+                                  ? activeLeakScenario.pressureSimPsi
+                                  : isSimulating
+                                  ? selectedHotspot.pressureSim
+                                  : selectedHotspot.pressureNominal} psi
+                              </span>
+                            </div>
+                            <div className="bg-blue-50 border border-blue-200 px-2.5 py-1 rounded text-center">
+                              <span className="text-[9px] text-blue-500 block">FLOW RATE</span>
+                              <span className="font-bold text-blue-700">
+                                {isSimulating && activeLeakScenario?.nodeId === selectedHotspot.id
+                                  ? activeLeakScenario.leakSizeLps
+                                  : selectedHotspot.flowLps} L/s
+                              </span>
+                            </div>
+                          </div>
+
+                          {selectedHotspot.type === 'valve' && (
+                            <button
+                              onClick={() => toggleValveIsolation(selectedHotspot.id)}
+                              className={`px-3 py-1.5 rounded font-bold text-xs cursor-pointer transition-colors ${
+                                isolatedValves.includes(selectedHotspot.id)
+                                  ? 'bg-amber-600 hover:bg-amber-700 text-white'
+                                  : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                              }`}
+                            >
+                              {isolatedValves.includes(selectedHotspot.id) ? 'Reopen Valve' : 'Isolate Valve'}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-gray-500 text-xs">
+                        Select any junction, sensor, or valve on the CAD model to inspect real-time hydraulic parameters.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Panel 2: Flow Monitor (Demand Filtering) */}
+              <div className="bg-white rounded-lg border border-gray-200 shadow-xs flex flex-col overflow-hidden">
+                <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-base font-bold text-gray-900">Panel 2: Flow Monitor (Demand Filtering)</h2>
+                      <span className="text-xs px-2 py-0.5 rounded font-medium bg-gray-100 text-gray-600 border border-gray-200">
+                        Time Series
+                      </span>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      Distinguishing genuine pipe rupture from normal diurnal customer consumption
+                    </p>
+                  </div>
+
+                  {isSimulating ? (
+                    <div className="text-right">
+                      <span className="text-xs font-bold text-red-600 bg-red-50 border border-red-200 px-2 py-1 rounded inline-flex items-center gap-1">
+                        <TrendingUp className="w-3.5 h-3.5" /> +{activeLeakScenario?.leakSizeLps || 85} L/s Burst Spike
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="text-right">
+                      <span className="text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded inline-flex items-center gap-1">
+                        <CheckCircle2 className="w-3.5 h-3.5" /> Normal Diurnal Curve
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-4 flex-1 flex flex-col justify-center">
+                  <div className="w-full h-72 sm:h-80">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={flowData} margin={{ top: 15, right: 20, left: -10, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                        <XAxis dataKey="time" tick={{ fill: '#64748b', fontSize: 11 }} axisLine={{ stroke: '#e2e8f0' }} tickLine={false} />
+                        <YAxis domain={[0, 200]} tick={{ fill: '#64748b', fontSize: 11 }} axisLine={{ stroke: '#e2e8f0' }} tickLine={false} unit=" L/s" />
+                        <Tooltip
+                          content={({ active, payload, label }) => {
+                            if (active && payload && payload.length) {
+                              const actual = payload.find(p => p.dataKey === 'actualFlow')?.value as number;
+                              const expected = payload.find(p => p.dataKey === 'expectedDemand')?.value as number;
+                              const diff = actual && expected ? Math.round((actual - expected) * 10) / 10 : 0;
+                              return (
+                                <div className="bg-white p-3 rounded-md shadow-md border border-gray-200 text-xs space-y-1.5 min-w-[170px]">
+                                  <div className="font-bold text-gray-800 border-b border-gray-100 pb-1">Time: {label}</div>
+                                  <div className="flex items-center justify-between text-gray-500">
+                                    <span>Expected Demand:</span>
+                                    <span className="font-semibold text-gray-700">{expected} L/s</span>
+                                  </div>
+                                  <div className="flex items-center justify-between text-blue-600">
+                                    <span>Actual Sensor Flow:</span>
+                                    <span className="font-bold text-blue-700">{actual} L/s</span>
+                                  </div>
+                                  {diff > 10 && (
+                                    <div className="mt-1 pt-1 border-t border-red-100 flex items-center justify-between text-red-600 font-bold">
+                                      <span>Anomaly Step:</span>
+                                      <span>+{diff} L/s</span>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            }
+                            return null;
+                          }}
+                        />
+                        <Legend wrapperStyle={{ paddingTop: '10px', fontSize: '12px' }} iconType="plainline" />
+
+                        {isSimulating && (
+                          <ReferenceArea x1="14:00" x2="22:00" y1={0} y2={200} fill="#fee2e2" fillOpacity={0.35} stroke="#f87171" strokeDasharray="3 3" />
+                        )}
+
+                        {isSimulating && (
+                          <ReferenceLine x="14:00" stroke="#dc2626" strokeDasharray="4 4" label={{ value: 'Leak Onset (14:00)', fill: '#dc2626', fontSize: 10, position: 'insideTopLeft' }} />
+                        )}
+
+                        <Line type="monotone" name="Expected Normal Demand" dataKey="expectedDemand" stroke="#94a3b8" strokeWidth={2.5} dot={{ r: 3, fill: '#94a3b8' }} activeDot={{ r: 5 }} />
+                        <Line type="monotone" name="Actual Sensor Flow" dataKey="actualFlow" stroke={isSimulating ? '#dc2626' : '#0284c7'} strokeWidth={3} dot={{ r: 3.5, fill: isSimulating ? '#dc2626' : '#0284c7' }} activeDot={{ r: 6 }} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  <div className="mt-2 bg-blue-50/60 p-3 rounded-md border border-blue-100 flex items-start gap-2.5 text-xs text-blue-900">
+                    <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-semibold">Demand Filtering Insight: </span>
+                      {isSimulating ? (
+                        <span>
+                          Statistical Z-Score filter detected a +{activeAnomaly} L/s persistent excess (Z = +38.22σ) starting at 14:00. Emergency SMS alerts were instantly dispatched to {smsConfig.phoneNumber}.
+                        </span>
+                      ) : (
+                        <span>
+                          Standard morning (08:00) and evening (18:00) consumption surges are classified as expected user demand (Z &lt; 1.5σ). The system continuously tracks against baseline historical consumption profiles.
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            {/* Panel 3: Repair Teams Deployment & On-Site Leakage Classification (Minor / Medium / Large) */}
+            <section aria-label="Repair Teams & Prioritization Alerts" className="space-y-5">
+              {/* Repair Teams Selection & On-Site Leakage Level Report Card */}
+              <div className="bg-white rounded-lg border border-gray-200 shadow-xs overflow-hidden">
+                <div className="px-6 py-4 bg-slate-900 text-white flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-blue-500/20 text-blue-300 rounded-lg border border-blue-400/30">
+                      <Users className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="text-base font-bold text-white">
+                          Municipal Repair Teams Roster &amp; On-Site Leakage Assessment
+                        </h3>
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                          {selectedRepairTeams.length} TEAM{selectedRepairTeams.length > 1 ? 'S' : ''} SELECTED
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-300 mt-0.5">
+                        Selected repair teams automatically travel to the active leakage spot every 1 minute and report whether the leakage is <strong className="text-white">Minor</strong>, <strong className="text-white">Medium</strong>, or <strong className="text-white">Large</strong>.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Active Leakage Classification Badge & Selector */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs text-slate-300 font-semibold">Team Field Report:</span>
+                    {(['Minor', 'Medium', 'Large'] as LeakageLevel[]).map((level) => {
+                      const isActiveLevel = reportedLeakageLevel === level;
+                      return (
+                        <button
+                          key={level}
+                          type="button"
+                          onClick={() => handleReportLeakageLevel(level)}
+                          className={`px-3 py-1.5 rounded-md text-xs font-extrabold uppercase tracking-wider cursor-pointer transition-all flex items-center gap-1.5 border ${
+                            isActiveLevel
+                              ? level === 'Large'
+                                ? 'bg-red-600 text-white border-red-400 shadow-md scale-105'
+                                : level === 'Medium'
+                                ? 'bg-amber-500 text-slate-950 border-amber-300 shadow-md scale-105'
+                                : 'bg-sky-500 text-slate-950 border-sky-300 shadow-md scale-105'
+                              : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                          }`}
+                        >
+                          {isActiveLevel && <Check className="w-3.5 h-3.5" />}
+                          <span>{level}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="p-5 bg-slate-50/60 space-y-4">
+                  {/* Live On-Site Field Report Banner when Simulating */}
+                  {isSimulating && activeLeakScenario ? (
+                    <div
+                      className={`p-4 rounded-lg border flex flex-col md:flex-row md:items-center justify-between gap-4 ${
+                        reportedLeakageLevel === 'Large'
+                          ? 'bg-red-50/90 border-red-300 text-red-950'
+                          : reportedLeakageLevel === 'Medium'
+                          ? 'bg-amber-50/90 border-amber-300 text-amber-950'
+                          : 'bg-sky-50/90 border-sky-300 text-sky-950'
+                      }`}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div
+                          className={`p-2.5 rounded-lg shrink-0 mt-0.5 font-black text-xs uppercase ${
+                            reportedLeakageLevel === 'Large'
+                              ? 'bg-red-600 text-white'
+                              : reportedLeakageLevel === 'Medium'
+                              ? 'bg-amber-500 text-slate-950'
+                              : 'bg-sky-500 text-slate-950'
+                          }`}
+                        >
+                          {reportedLeakageLevel} Leak
+                        </div>
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-sm font-extrabold">
+                              Selected Team(s) On-Site at Leakage Spot: Node {activeLeakScenario.nodeId} ({activeLeakScenario.locationName})
+                            </span>
+                            <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-white/80 border border-current">
+                              Next Spot in {leakSecondsRemaining}s
+                            </span>
+                          </div>
+                          <p className="text-xs mt-1 leading-relaxed">
+                            <strong>Dispatched Team(s):</strong> {selectedTeamNamesLabel} •{' '}
+                            <strong>Field Inspection Mention:</strong> Leakage at{' '}
+                            <span className="font-mono font-bold">{activeLeakScenario.pipeId}</span> is classified as{' '}
+                            <strong className="underline uppercase">{reportedLeakageLevel}</strong> ({activeLeakScenario.leakSizeLps} L/s outflow, -{activeLeakScenario.pressureDropPsi} psi drop). Report sent to Gmail (<span className="font-mono font-semibold">{smsConfig.recipientEmail}</span>).
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleReportLeakageLevel(reportedLeakageLevel)}
+                          className="px-3 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-md text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors"
+                        >
+                          <Mail className="w-3.5 h-3.5 text-red-400" />
+                          <span>Resend Team Report to Gmail</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-3.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                        <span>
+                          <strong>Pipes Normal:</strong> Selected Repair Teams ({selectedTeamNamesLabel}) are standing by and will automatically deploy to the leakage spot as soon as a leak is detected.
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 4-Team Selectable Cards Grid */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+                    {REPAIR_TEAMS.map((team) => {
+                      const isTeamSelected = selectedTeamIds.includes(team.id);
+                      const isOnSite = isSimulating && isTeamSelected;
+                      return (
+                        <div
+                          key={team.id}
+                          onClick={() => handleToggleRepairTeam(team.id)}
+                          className={`p-3.5 rounded-lg border transition-all cursor-pointer flex flex-col justify-between ${
+                            isTeamSelected
+                              ? 'bg-white border-blue-500 ring-2 ring-blue-500/20 shadow-sm'
+                              : 'bg-gray-50/80 border-gray-200 opacity-75 hover:opacity-100'
+                          }`}
+                        >
+                          <div>
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="checkbox"
+                                  checked={isTeamSelected}
+                                  onChange={() => {}}
+                                  className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                                />
+                                <span className="text-xs font-extrabold text-gray-900">{team.unitCode}</span>
+                              </div>
+                              {isOnSite ? (
+                                <span className="px-2 py-0.5 rounded-full text-[9px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-ping" />
+                                  AT {activeLeakScenario?.nodeId || 'J-108'}
+                                </span>
+                              ) : isTeamSelected ? (
+                                <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-blue-100 text-blue-800">
+                                  SELECTED
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded-full text-[9px] font-medium bg-gray-200 text-gray-600">
+                                  STANDBY
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="text-xs font-bold text-gray-800 mt-2">{team.name}</div>
+                            <div className="text-[11px] text-gray-600 mt-0.5">
+                              Lead: <strong className="text-gray-800">{team.leadEngineer}</strong>
+                            </div>
+                            <div className="text-[10px] text-gray-500 mt-1">{team.specialty}</div>
+                          </div>
+
+                          <div className="mt-3 pt-2 border-t border-gray-100 flex items-center justify-between text-[10px]">
+                            <span className="font-mono text-gray-500">ETA: {team.etaMinutes} mins</span>
+                            {isOnSite ? (
+                              <span
+                                className={`px-1.5 py-0.5 rounded font-bold uppercase ${
+                                  reportedLeakageLevel === 'Large'
+                                    ? 'bg-red-100 text-red-800'
+                                    : reportedLeakageLevel === 'Medium'
+                                    ? 'bg-amber-100 text-amber-800'
+                                    : 'bg-sky-100 text-sky-800'
+                                }`}
+                              >
+                                Reports: {reportedLeakageLevel}
+                              </span>
+                            ) : (
+                              <span className="text-blue-600 font-semibold">
+                                {isTeamSelected ? 'Ready for Spot' : 'Click to Select'}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {!isSimulating ? (
+                <div className="bg-white rounded-lg border border-gray-200 p-8 shadow-xs text-center flex flex-col items-center justify-center">
+                  <div className="w-12 h-12 bg-gray-100 text-gray-500 rounded-full flex items-center justify-center mb-3">
+                    <ShieldCheck className="w-6 h-6 text-gray-400" />
+                  </div>
+                  <h3 className="text-base font-bold text-gray-800 tracking-tight">System Operating Normally</h3>
+                  <p className="text-sm text-gray-500 max-w-lg mt-1">
+                    All 6 optimized acoustic sensors and pressure transducers in DMA-04 report nominal hydraulic gradients. Selected Repair Teams ({selectedTeamNamesLabel}) are on standby.
+                  </p>
+                </div>
+              ) : (
+                <div className="bg-white rounded-lg border-2 border-red-500 shadow-sm overflow-hidden transition-all duration-300">
+                  <div className="bg-red-600 px-6 py-3 text-white flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <div className="p-1.5 bg-red-700 rounded-md">
+                        <ShieldAlert className="w-5 h-5 text-white animate-bounce" />
+                      </div>
+                      <div>
+                        <span className="text-xs uppercase tracking-wider font-semibold opacity-90">
+                          Emergency Alert • DMA-04 East • Leakage Classified: {reportedLeakageLevel.toUpperCase()}
+                        </span>
+                        <h3 className="text-lg font-extrabold leading-tight">
+                          {reportedLeakageLevel.toUpperCase()} PIPE LEAKAGE DETECTED &amp; REPAIR TEAM ON-SITE
+                        </h3>
+                      </div>
+                    </div>
+
+                    <div className="shrink-0 flex items-center gap-2">
+                      <span className="inline-block bg-white text-red-700 font-black text-xs md:text-sm px-3.5 py-1.5 rounded shadow-sm border border-red-200 uppercase tracking-wide">
+                        LEAKAGE: {reportedLeakageLevel.toUpperCase()}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="p-6 bg-red-50/20">
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                      <div className="bg-white p-4 rounded-lg border border-red-200 shadow-2xs">
+                        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
+                          <MapPin className="w-4 h-4 text-red-600" /> Localized Node ID
+                        </div>
+                        <div className="mt-2 text-xl font-bold text-red-700 flex items-center gap-1.5">
+                          <span>{alertDetails?.nodeId}</span>
+                          <span className="text-xs px-2 py-0.5 rounded bg-red-100 text-red-800 font-bold uppercase">
+                            {reportedLeakageLevel} Leak
+                          </span>
+                        </div>
+                        <div className="mt-1 text-xs text-gray-600 font-medium">
+                          {alertDetails?.locationName}
+                        </div>
+                        <div className="mt-2 pt-2 border-t border-gray-100 text-[11px] text-gray-500">
+                          Pipe ID: <span className="font-semibold text-gray-700">{alertDetails?.pipeId}</span>
+                        </div>
+                      </div>
+
+                      <div className="bg-white p-4 rounded-lg border border-red-200 shadow-2xs">
+                        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
+                          <Droplets className="w-4 h-4 text-red-600" /> Estimated Leak Size
+                        </div>
+                        <div className="mt-2 text-2xl font-black text-gray-900">
+                          {alertDetails?.estimatedLeakSizeLps} <span className="text-sm font-semibold text-gray-500">L/s</span>
+                        </div>
+                        <div className="mt-1 text-xs text-red-600 font-semibold">
+                          Team Mention: <span className="uppercase font-extrabold">{reportedLeakageLevel} Leakage</span>
+                        </div>
+                        <div className="mt-2 pt-2 border-t border-gray-100 text-[11px] text-gray-500 flex items-center justify-between">
+                          <span>Orifice Area (Torricelli):</span>
+                          <span className="font-bold text-red-600">{alertDetails?.orificeAreaMm2} mm²</span>
+                        </div>
+                      </div>
+
+                      <div className="bg-white p-4 rounded-lg border border-red-200 shadow-2xs">
+                        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
+                          <Users className="w-4 h-4 text-blue-600" /> Selected Repair Team(s)
+                        </div>
+                        <div className="mt-2 text-sm font-extrabold text-gray-900 leading-snug">
+                          {selectedTeamNamesLabel}
+                        </div>
+                        <div className="mt-1 text-xs text-emerald-700 font-semibold">
+                          Status: On-Site @ Node {alertDetails?.nodeId}
+                        </div>
+                        <div className="mt-2 pt-2 border-t border-gray-100 text-[11px] text-gray-500 flex items-center justify-between">
+                          <span>Gmail Alert:</span>
+                          <span className="font-bold text-red-700 font-mono truncate max-w-[140px]">{smsConfig.recipientEmail}</span>
+                        </div>
+                      </div>
+
+                      <div className="bg-white p-4 rounded-lg border border-red-200 shadow-2xs flex flex-col justify-between">
+                        <div>
+                          <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
+                            <DollarSign className="w-4 h-4 text-amber-600" /> Economic Loss Rate
+                          </div>
+                          <div className="mt-2 text-2xl font-black text-amber-600">
+                            ${alertDetails?.hourlyCostUsd} <span className="text-xs font-semibold text-gray-500">/ hour</span>
+                          </div>
+                          <div className="text-xs text-gray-500 mt-1">
+                            Physical losses computed via AWWA M36 standard volumetric water balance.
+                          </div>
+                        </div>
+
+                        <div className="mt-3 flex gap-2">
+                          <button
+                            onClick={handleDispatchAction}
+                            aria-label="Dispatch Rapid Response Team"
+                            className={`flex-1 py-2.5 px-3 rounded-md font-bold text-xs uppercase tracking-wide flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                              isDispatched
+                                ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                                : 'bg-red-600 text-white hover:bg-red-700 shadow-xs'
+                            }`}
+                          >
+                            <CheckCircle2 className="w-4 h-4" /> Team On-Site ({reportedLeakageLevel})
+                          </button>
+
+                          <button
+                            onClick={() => {
+                              setShowSmsModal(true);
+                              setSmsModalTab('phone_preview');
+                            }}
+                            aria-label="View Sent SMS Dispatch Logs"
+                            className="px-3 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md font-semibold text-xs flex items-center justify-center cursor-pointer transition-colors"
+                            title="Open Gmail & SMS Thread"
+                          >
+                            <Mail className="w-4 h-4 text-red-600" />
+                          </button>
+
+                          <button
+                            onClick={handleSyncLeakToSupabase}
+                            disabled={isSyncingSupabase}
+                            aria-label="Sync Leak Incident to Supabase Database"
+                            className="px-3 py-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-md font-semibold text-xs flex items-center justify-center cursor-pointer transition-colors"
+                            title="Sync Incident to Supabase (atgbqxmergxaaazrhbpr)"
+                          >
+                            <Database className="w-4 h-4 text-emerald-600" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </section>
+          </div>
+        )}
+
+        {/* TAB 2: NRW & AWWA Water Audit Dashboard */}
+        {activeTab === 'nrw_audit' && (
+          <div className="space-y-6">
+            <div className="bg-white rounded-lg border border-gray-200 p-5 shadow-xs">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-100 pb-4">
+                <div>
+                  <h2 className="text-base font-bold text-gray-900">
+                    AWWA M36 Standard Volumetric Water Balance
+                  </h2>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    District Metered Area System Input Volume (SIV) apportionment and economic loss tracking
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="px-2.5 py-1 rounded text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+                    SIV: {nrwMetric.waterBalance.systemInputVolumeM3.toLocaleString()} m³ / day
+                  </span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-5 items-center">
+                <div className="h-64 flex flex-col items-center justify-center">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={waterBalancePieData}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={50}
+                        outerRadius={80}
+                        paddingAngle={4}
+                        dataKey="value"
+                      >
+                        {waterBalancePieData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={entry.color} />
+                        ))}
+                      </Pie>
+                      <Tooltip formatter={(value: any) => `${Number(value).toLocaleString()} m³`} />
+                      <Legend verticalAlign="bottom" height={36} iconType="circle" />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+
+                <div className="lg:col-span-2 grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="bg-sky-50/60 p-4 rounded-lg border border-sky-100">
+                    <span className="text-xs font-bold text-sky-800 uppercase tracking-wider">Authorized Consumption</span>
+                    <div className="mt-2 text-xl font-extrabold text-sky-900">
+                      {nrwMetric.waterBalance.authorizedConsumptionM3.toLocaleString()} <span className="text-xs font-semibold text-sky-700">m³</span>
+                    </div>
+                    <div className="text-xs text-sky-700 mt-1">
+                      {((nrwMetric.waterBalance.authorizedConsumptionM3 / (nrwMetric.waterBalance.systemInputVolumeM3 || 1)) * 100).toFixed(1)}% of supply volume
+                    </div>
+                    <div className="mt-2 pt-2 border-t border-sky-200/60 text-[11px] text-sky-600">
+                      Billed metered residential & commercial revenue
+                    </div>
+                  </div>
+
+                  <div className="bg-amber-50/60 p-4 rounded-lg border border-amber-100">
+                    <span className="text-xs font-bold text-amber-800 uppercase tracking-wider">Apparent Losses</span>
+                    <div className="mt-2 text-xl font-extrabold text-amber-900">
+                      {nrwMetric.waterBalance.apparentLossesM3.toLocaleString()} <span className="text-xs font-semibold text-amber-700">m³</span>
+                    </div>
+                    <div className="text-xs text-amber-700 mt-1">
+                      4.0% estimated metering inaccuracy
+                    </div>
+                    <div className="mt-2 pt-2 border-t border-amber-200/60 text-[11px] text-amber-600">
+                      Data handling error & unauthorized consumption
+                    </div>
+                  </div>
+
+                  <div className={`p-4 rounded-lg border ${isSimulating ? 'bg-red-50 border-red-200' : 'bg-gray-50 border-gray-200'}`}>
+                    <span className={`text-xs font-bold uppercase tracking-wider ${isSimulating ? 'text-red-800' : 'text-gray-700'}`}>
+                      Real Physical Losses
+                    </span>
+                    <div className={`mt-2 text-xl font-extrabold ${isSimulating ? 'text-red-700' : 'text-gray-900'}`}>
+                      {nrwMetric.waterBalance.realLossesM3.toLocaleString()} <span className="text-xs font-semibold text-gray-500">m³</span>
+                    </div>
+                    <div className={`text-xs mt-1 font-semibold ${isSimulating ? 'text-red-600' : 'text-gray-600'}`}>
+                      {((nrwMetric.waterBalance.realLossesM3 / (nrwMetric.waterBalance.systemInputVolumeM3 || 1)) * 100).toFixed(1)}% of total SIV
+                    </div>
+                    <div className="mt-2 pt-2 border-t border-gray-200/60 text-[11px] text-gray-500">
+                      Active pipe ruptures & joint leakage
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* DMA Municipal Sectors Comparison Matrix */}
+            <div className="bg-white rounded-lg border border-gray-200 p-5 shadow-xs">
+              <div className="flex items-center justify-between mb-4 border-b border-gray-100 pb-3">
+                <div>
+                  <h3 className="text-sm font-bold text-gray-900">
+                    Municipal District Metered Areas (DMA) Benchmarking
+                  </h3>
+                  <p className="text-xs text-gray-500">
+                    Comparative tracking of Minimum Night Flow (MNF), Pressure Head, and Infrastructure Leakage Index (ILI)
+                  </p>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-gray-50 text-gray-600 font-semibold border-b border-gray-200">
+                      <th className="py-2.5 px-3">DMA Sector</th>
+                      <th className="py-2.5 px-3">Mains (km)</th>
+                      <th className="py-2.5 px-3">Connections</th>
+                      <th className="py-2.5 px-3">Inflow (L/s)</th>
+                      <th className="py-2.5 px-3">Min. Night Flow</th>
+                      <th className="py-2.5 px-3">Avg Pressure</th>
+                      <th className="py-2.5 px-3">NRW Ratio</th>
+                      <th className="py-2.5 px-3">ILI Index</th>
+                      <th className="py-2.5 px-3">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {dmaList.map((dma) => (
+                      <tr
+                        key={dma.id}
+                        className={dma.status === 'Critical' ? 'bg-red-50/70 font-semibold' : 'hover:bg-gray-50'}
+                      >
+                        <td className="py-2.5 px-3 font-medium text-gray-900">
+                          {dma.name} <span className="text-[10px] text-gray-400">({dma.id})</span>
+                        </td>
+                        <td className="py-2.5 px-3 font-mono">{dma.pipeLengthKm}</td>
+                        <td className="py-2.5 px-3 font-mono">{dma.connections.toLocaleString()}</td>
+                        <td className="py-2.5 px-3 font-mono">{dma.currentInflowLps} L/s</td>
+                        <td className="py-2.5 px-3 font-mono">{dma.minimumNightFlowLps} L/s</td>
+                        <td className="py-2.5 px-3 font-mono">{dma.pressureAvgPsi} psi</td>
+                        <td className="py-2.5 px-3 font-mono font-bold">
+                          <span className={dma.nrwPercentage > 25 ? 'text-red-600' : 'text-gray-800'}>
+                            {dma.nrwPercentage}%
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 font-mono">
+                          <span className={dma.iliScore > 4 ? 'text-red-700 font-bold' : 'text-gray-700'}>
+                            {dma.iliScore}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3">
+                          {dma.status === 'Critical' ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-black bg-red-100 text-red-800 border border-red-200">
+                              <span className="w-1.5 h-1.5 rounded-full bg-red-600 animate-pulse"></span>
+                              CRITICAL OUTLIER
+                            </span>
+                          ) : dma.status === 'Warning' ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-800 border border-amber-200">
+                              Warning
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+                              Optimal
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 3: Sensor Placement & Genetic Optimizer Dashboard */}
+        {activeTab === 'sensor_placement' && (
+          <div className="space-y-6">
+            <div className="bg-white rounded-lg border border-gray-200 p-5 shadow-xs">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-100 pb-4">
+                <div>
+                  <h2 className="text-base font-bold text-gray-900">
+                    Genetic Algorithm Sensor Placement Optimizer
+                  </h2>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Maximizing hydraulic fault observability under restricted municipal capital expenditure budgets
+                  </p>
+                </div>
+                <div className="flex items-center gap-4 bg-gray-50 p-2.5 rounded-lg border border-gray-200">
+                  <div className="text-xs font-semibold text-gray-700">Sensor Budget (k):</div>
+                  <input
+                    type="range"
+                    min={3}
+                    max={12}
+                    value={sensorBudgetK}
+                    onChange={(e) => setSensorBudgetK(Number(e.target.value))}
+                    className="w-28 accent-blue-600 cursor-pointer"
+                  />
+                  <span className="text-xs font-mono font-bold bg-white px-2 py-0.5 rounded border border-gray-300">
+                    {sensorBudgetK} loggers
+                  </span>
+                  <span className="text-xs font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                    {Math.min(99.6, Math.round((0.55 + (sensorBudgetK / 12) * 0.44) * 1000) / 10)}% Observability
+                  </span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-5">
+                <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                  <span className="text-xs font-semibold text-gray-500 uppercase">Naive / Uniform Placement</span>
+                  <div className="mt-2 text-xl font-bold text-gray-700">58.2% Coverage</div>
+                  <p className="text-xs text-gray-500 mt-1">Requires 18 sensor loggers to cover main junction loops, blind to low-pressure branches.</p>
+                </div>
+
+                <div className="bg-blue-50/70 p-4 rounded-lg border border-blue-200">
+                  <span className="text-xs font-semibold text-blue-700 uppercase">EPANET Entropy Optimizer</span>
+                  <div className="mt-2 text-xl font-bold text-blue-900">98.4% Coverage</div>
+                  <p className="text-xs text-blue-700 mt-1">Only 6 loggers needed. Genetic algorithm placed sensors at maximal Jacobian pressure sensitivity nodes.</p>
+                </div>
+
+                <div className="bg-emerald-50/70 p-4 rounded-lg border border-emerald-200">
+                  <span className="text-xs font-semibold text-emerald-700 uppercase">Capital Savings</span>
+                  <div className="mt-2 text-xl font-bold text-emerald-900">$48,200 Saved</div>
+                  <p className="text-xs text-emerald-700 mt-1">Reduced sensor procurement and annual calibration truck rolls by 66.7%.</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-lg border border-gray-200 p-5 shadow-xs">
+              <div className="flex items-center justify-between mb-4 border-b border-gray-100 pb-3">
+                <div>
+                  <h3 className="text-sm font-bold text-gray-900">
+                    Deployed Sensor Instrumentation Inventory (DMA-04)
+                  </h3>
+                  <p className="text-xs text-gray-500">
+                    Real-time battery life, LoRaWAN / NB-IoT signal power, and sampling frequencies
+                  </p>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-gray-50 text-gray-600 font-semibold border-b border-gray-200">
+                      <th className="py-2.5 px-3">Device Tag</th>
+                      <th className="py-2.5 px-3">Junction Location</th>
+                      <th className="py-2.5 px-3">Instrumentation Type</th>
+                      <th className="py-2.5 px-3">Hardware Model</th>
+                      <th className="py-2.5 px-3">Battery</th>
+                      <th className="py-2.5 px-3">RSSI Signal</th>
+                      <th className="py-2.5 px-3">Sampling Freq</th>
+                      <th className="py-2.5 px-3">Sensitivity</th>
+                      <th className="py-2.5 px-3">Device State</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 font-mono">
+                    {SENSOR_INVENTORY.map((sensor) => (
+                      <tr key={sensor.id} className="hover:bg-gray-50">
+                        <td className="py-2.5 px-3 font-bold text-blue-700">{sensor.id}</td>
+                        <td className="py-2.5 px-3 font-sans font-medium text-gray-800">{sensor.nodeLocation}</td>
+                        <td className="py-2.5 px-3 font-sans text-gray-600">{sensor.type}</td>
+                        <td className="py-2.5 px-3 font-sans text-gray-500">{sensor.model}</td>
+                        <td className="py-2.5 px-3">
+                          <span className="flex items-center gap-1.5 font-bold text-emerald-700">
+                            <Battery className="w-4 h-4 text-emerald-600" />
+                            {sensor.batteryPct}%
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <span className="flex items-center gap-1.5 text-gray-700">
+                            <Wifi className="w-3.5 h-3.5 text-blue-500" />
+                            {sensor.signalDbm} dBm
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-gray-600">{sensor.samplingRateHz} Hz</td>
+                        <td className="py-2.5 px-3 font-bold text-indigo-700">{sensor.hydraulicSensitivityScore}%</td>
+                        <td className="py-2.5 px-3 font-sans">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                            Online
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 4: Work Orders & Valve Isolation Dispatch Dashboard */}
+        {activeTab === 'work_orders' && (
+          <div className="space-y-6">
+            <div className="bg-white rounded-lg border border-gray-200 p-5 shadow-xs">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-100 pb-4">
+                <div>
+                  <h2 className="text-base font-bold text-gray-900">
+                    Municipal Repair Crew Dispatch & Valve Isolation Management
+                  </h2>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Prioritizing repair actions to eliminate Non-Revenue Water and prevent infrastructure damage
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={handleSyncWorkOrdersToSupabase}
+                    disabled={isSyncingSupabase}
+                    className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-md font-semibold text-xs flex items-center gap-1.5 cursor-pointer shadow-2xs transition-colors"
+                    title="Sync current work orders to Supabase PostgreSQL table"
+                  >
+                    <Database className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Sync to Supabase ({workOrdersList.length})</span>
+                  </button>
+                  {isSimulating && (
+                    <span className="px-3 py-1 bg-red-100 text-red-800 text-xs font-bold rounded-full border border-red-200 flex items-center gap-1.5">
+                      <AlertTriangle className="w-4 h-4 text-red-600 animate-pulse" />
+                      1 Emergency Work Order Awaiting Dispatch
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="overflow-x-auto mt-4">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-gray-50 text-gray-600 font-semibold border-b border-gray-200">
+                      <th className="py-2.5 px-3">Order ID</th>
+                      <th className="py-2.5 px-3">Sector &amp; Location</th>
+                      <th className="py-2.5 px-3">Leakage Mention</th>
+                      <th className="py-2.5 px-3">Selected Repair Team(s)</th>
+                      <th className="py-2.5 px-3">Pipe Specification</th>
+                      <th className="py-2.5 px-3">Isolation Valves</th>
+                      <th className="py-2.5 px-3">Affected Meters</th>
+                      <th className="py-2.5 px-3">Est. Duration</th>
+                      <th className="py-2.5 px-3">Dispatch Status</th>
+                      <th className="py-2.5 px-3 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {workOrdersList.map((wo) => {
+                      const isEmergency = wo.id === (activeLeakScenario?.workOrderId || 'WO-8842');
+                      const leakLabel = wo.leakageLevel || (wo.priority.includes('Critical') ? 'Large' : 'Medium');
+                      return (
+                        <tr
+                          key={wo.id}
+                          className={isEmergency ? 'bg-red-50/70 font-semibold' : 'hover:bg-gray-50'}
+                        >
+                          <td className="py-2.5 px-3 font-mono font-bold text-gray-900">{wo.id}</td>
+                          <td className="py-2.5 px-3">
+                            <div className="font-semibold text-gray-900">{wo.sector} (Node {wo.nodeId})</div>
+                            <div className="text-[11px] text-gray-500">{wo.address}</div>
+                            {wo.hasSensitiveFacilities && (
+                              <span className="inline-block mt-0.5 text-[10px] font-bold text-red-700 bg-red-100 px-1.5 py-0.2 rounded">
+                                Adjacent: City Central Hospital
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <span
+                              className={`inline-block px-2.5 py-0.5 rounded text-[10px] font-extrabold uppercase ${
+                                leakLabel === 'Large'
+                                  ? 'bg-red-600 text-white'
+                                  : leakLabel === 'Medium'
+                                  ? 'bg-amber-500 text-slate-950'
+                                  : 'bg-sky-500 text-slate-950'
+                              }`}
+                            >
+                              {leakLabel} Leakage
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-gray-800 font-semibold">{wo.assignedCrew}</td>
+                          <td className="py-2.5 px-3 text-gray-600 font-mono text-[11px]">{wo.pipeDiameter} • {wo.pipeMaterial}</td>
+                          <td className="py-2.5 px-3 font-mono font-semibold text-blue-700">{wo.isolationValves.join(', ')}</td>
+                          <td className="py-2.5 px-3 font-mono">{wo.affectedCustomers}</td>
+                          <td className="py-2.5 px-3 font-mono">{wo.estimatedRepairHrs} hrs</td>
+                          <td className="py-2.5 px-3">
+                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold ${
+                              wo.status === 'Pending Dispatch'
+                                ? 'bg-red-100 text-red-800 animate-pulse'
+                                : wo.status === 'On-Site Inspecting'
+                                ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                : wo.status === 'En Route'
+                                ? 'bg-blue-100 text-blue-800'
+                                : wo.status === 'Excavating'
+                                ? 'bg-amber-100 text-amber-800'
+                                : 'bg-emerald-100 text-emerald-800'
+                            }`}>
+                              {wo.status}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-right">
+                            {isEmergency && !isDispatched && (
+                              <button
+                                onClick={handleDispatchAction}
+                                className="px-2.5 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-[11px] font-bold cursor-pointer transition-colors"
+                              >
+                                Dispatch
+                              </button>
+                            )}
+                            {isEmergency && isDispatched && (
+                              <button
+                                onClick={() => setShowDispatchModal(true)}
+                                className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[11px] font-semibold cursor-pointer transition-colors"
+                              >
+                                View Order
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* Notification / Gmail & SMS Receiving Options Modal */}
+      {showSmsModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg border border-gray-200 shadow-2xl max-w-2xl w-full max-h-[90vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between bg-gray-50">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-red-50 text-red-600 rounded-lg border border-red-200">
+                  <Mail className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-gray-900">
+                    Gmail &amp; SMS Leak Alert Dispatch Center
+                  </h3>
+                  <p className="text-xs text-gray-500">
+                    Automatic 1-minute leak location alerts sent to your selected Gmail &amp; mobile number
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowSmsModal(false)}
+                className="p-1 rounded-md text-gray-400 hover:text-gray-700 hover:bg-gray-100 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Navigation Tabs */}
+            <div className="px-6 border-b border-gray-200 flex gap-4 bg-white text-xs font-semibold">
+              <button
+                onClick={() => setSmsModalTab('phone_preview')}
+                className={`py-3 border-b-2 flex items-center gap-1.5 cursor-pointer ${
+                  smsModalTab === 'phone_preview'
+                    ? 'border-emerald-600 text-emerald-700'
+                    : 'border-transparent text-gray-500 hover:text-gray-800'
+                }`}
+              >
+                <Mail className="w-4 h-4" />
+                <span>Live Gmail &amp; SMS Feed ({smsMessages.length})</span>
+              </button>
+              <button
+                onClick={() => setSmsModalTab('recipient_settings')}
+                className={`py-3 border-b-2 flex items-center gap-1.5 cursor-pointer ${
+                  smsModalTab === 'recipient_settings'
+                    ? 'border-emerald-600 text-emerald-700'
+                    : 'border-transparent text-gray-500 hover:text-gray-800'
+                }`}
+              >
+                <Settings className="w-4 h-4" />
+                <span>Selected Gmail &amp; Phone Settings</span>
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="flex-1 overflow-auto p-6 bg-slate-50/50">
+              {smsModalTab === 'phone_preview' ? (
+                <div className="space-y-4">
+                  {/* Quick Gmail Selector Banner inside Inbox Preview */}
+                  <div className="bg-white p-3.5 rounded-lg border border-red-200 shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5">
+                      <div className="p-2 bg-red-50 text-red-600 rounded-md border border-red-100">
+                        <Mail className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-gray-900">Selected Gmail Recipient</div>
+                        <div className="text-[11px] font-mono text-red-700 font-semibold">{smsConfig.recipientEmail}</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={GMAIL_RECIPIENT_OPTIONS.some(o => o.email === smsConfig.recipientEmail) ? smsConfig.recipientEmail : 'custom'}
+                        onChange={(e) => {
+                          if (e.target.value === 'custom') {
+                            setSmsModalTab('recipient_settings');
+                          } else {
+                            handleSelectGmailQuick(e.target.value);
+                          }
+                        }}
+                        className="px-2.5 py-1.5 text-xs border border-gray-300 rounded-md bg-white font-mono text-gray-800"
+                      >
+                        {GMAIL_RECIPIENT_OPTIONS.map((opt) => (
+                          <option key={opt.email} value={opt.email}>
+                            {opt.email}
+                          </option>
+                        ))}
+                        {!GMAIL_RECIPIENT_OPTIONS.some(o => o.email === smsConfig.recipientEmail) && (
+                          <option value="custom">{smsConfig.recipientEmail}</option>
+                        )}
+                        <option value="custom">+ Custom Gmail...</option>
+                      </select>
+                      <a
+                        href={`https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(smsConfig.recipientEmail)}&su=${encodeURIComponent(`🚨 [LeakNova Alert] Active Leak at Node ${activeLeakScenario?.nodeId || 'J-108'} (${activeLeakScenario?.locationName || 'Oak & 5th Ave'})`)}&body=${encodeURIComponent(smsMessages[0]?.messageText || '')}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-md text-xs font-semibold flex items-center gap-1.5 shrink-0 transition-colors"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        <span>Compose in Gmail</span>
+                      </a>
+                    </div>
+                  </div>
+
+                  {/* Smartphone View Mockup */}
+                  <div className="max-w-md mx-auto bg-slate-900 text-white rounded-3xl p-4 shadow-xl border-4 border-slate-700">
+                    {/* Phone Top Notch */}
+                    <div className="flex justify-between items-center text-[10px] text-gray-400 px-3 pb-2 border-b border-slate-800 mb-3">
+                      <span>9:41 AM</span>
+                      <div className="w-16 h-3 bg-slate-800 rounded-full"></div>
+                      <div className="flex items-center gap-1">
+                        <Wifi className="w-2.5 h-2.5" />
+                        <Battery className="w-3 h-3 text-emerald-400" />
+                      </div>
+                    </div>
+
+                    {/* Sender Header */}
+                    <div className="text-center pb-2 border-b border-slate-800 mb-3">
+                      <div className="w-9 h-9 rounded-full bg-blue-600 mx-auto flex items-center justify-center font-bold text-xs text-white">
+                        LN
+                      </div>
+                      <div className="text-xs font-bold text-white mt-1">LeakNova SCADA Core</div>
+                      <div className="text-[10px] text-gray-400">1-Min Auto Leak Rotation • PID: cqvdsywibtbdonsuuwpc</div>
+                      <div className="mt-1.5 flex flex-wrap items-center justify-center gap-1.5">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-500/20 text-red-300 text-[10px] font-mono border border-red-500/30">
+                          <Mail className="w-3 h-3 text-red-400" />
+                          <span>{smsConfig.recipientEmail}</span>
+                        </span>
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-mono border border-emerald-500/30">
+                          <Smartphone className="w-3 h-3 text-emerald-400" />
+                          <span>{smsConfig.phoneNumber}</span>
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Message Thread */}
+                    <div className="space-y-2.5 max-h-72 overflow-y-auto px-1 text-xs">
+                      {smsMessages.map((msg) => {
+                        const isOutbound = msg.direction === 'OUTBOUND_ALERT';
+                        return (
+                          <div
+                            key={msg.id}
+                            className={`flex flex-col ${isOutbound ? 'items-start' : 'items-end'}`}
+                          >
+                            <div className="text-[9px] text-gray-400 px-1 mb-0.5">
+                              {msg.recipientName} • {msg.timestamp}
+                            </div>
+                            <div
+                              className={`p-2.5 rounded-2xl max-w-[88%] text-[11px] leading-relaxed shadow-sm ${
+                                isOutbound
+                                  ? 'bg-slate-800 text-slate-100 border border-slate-700 rounded-tl-xs'
+                                  : 'bg-emerald-600 text-white rounded-tr-xs'
+                              }`}
+                            >
+                              {msg.subject && (
+                                <div className="font-bold text-red-300 mb-1 pb-1 border-b border-slate-700 text-[10px]">
+                                  To: {msg.recipientEmail || smsConfig.recipientEmail} — {msg.subject}
+                                </div>
+                              )}
+                              {msg.messageText}
+                            </div>
+                            <span className="text-[8px] text-gray-500 mt-0.5 px-1">
+                              {msg.status}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Quick Reply Input */}
+                    <form onSubmit={handleSendManualReply} className="mt-3 pt-2 border-t border-slate-800 flex gap-2">
+                      <input
+                        type="text"
+                        placeholder="Reply to SCADA alert (e.g. ACK, En route)..."
+                        value={manualSmsText}
+                        onChange={(e) => setManualSmsText(e.target.value)}
+                        className="flex-1 bg-slate-800 border border-slate-700 rounded-full px-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-hidden focus:border-emerald-500"
+                      />
+                      <button
+                        type="submit"
+                        className="p-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-full cursor-pointer transition-colors"
+                      >
+                        <Send className="w-3.5 h-3.5" />
+                      </button>
+                    </form>
+                  </div>
+
+                  <div className="text-center text-xs text-gray-500 flex items-center justify-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span>Every 1 minute, new leak alerts are sent to <strong className="text-gray-900 font-mono">{smsConfig.recipientEmail}</strong></span>
+                  </div>
+                </div>
+              ) : (
+                /* Recipient Gmail & Phone Settings Form */
+                <form onSubmit={handleSaveSmsSettings} className="space-y-5 bg-white p-5 rounded-lg border border-gray-200 shadow-2xs">
+                  {/* Verified Active Gmail & Phone Target Status Card */}
+                  <div className="p-4 bg-red-50/70 border border-red-200 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-start gap-3">
+                      <div className="p-2 bg-red-100 text-red-700 rounded-full shrink-0 mt-0.5">
+                        <Mail className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-red-950 uppercase tracking-wide">Selected Gmail Recipient</span>
+                          <span className="px-2 py-0.5 rounded bg-red-200/80 text-red-900 font-bold text-[10px]">
+                            1-MIN AUTO DISPATCH ACTIVE
+                          </span>
+                        </div>
+                        <div className="font-mono text-base font-bold text-red-900 mt-0.5">
+                          {smsConfig.recipientEmail}
+                        </div>
+                        <div className="text-[11px] text-red-700 mt-0.5">
+                          SMS Backup: <strong className="font-mono text-red-950">{smsConfig.phoneNumber}</strong>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSmsEmailInput(USER_ALERT_GMAIL);
+                          setSmsPhoneInput(USER_ALERT_PHONE_FORMATTED);
+                          setSmsNameInput('Chief On-Call Engineer');
+                        }}
+                        className="px-3 py-1.5 bg-white hover:bg-red-100 text-red-800 border border-red-300 rounded text-xs font-semibold cursor-pointer shadow-2xs transition-colors flex items-center gap-1.5"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>Reset Default Gmail</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Gmail Address Selection & Custom Input */}
+                  <div>
+                    <h4 className="text-xs font-bold text-gray-900 uppercase tracking-wider mb-1">
+                      Select or Enter Receiving Gmail Address
+                    </h4>
+                    <p className="text-xs text-gray-500 mb-3">
+                      Choose a preset Gmail address or type any custom Gmail address to receive automatic 1-minute pipe leak alerts.
+                    </p>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-700 mb-1">
+                          Quick-Select Preset Gmail:
+                        </label>
+                        <select
+                          value={GMAIL_RECIPIENT_OPTIONS.some(o => o.email === smsEmailInput) ? smsEmailInput : ''}
+                          onChange={(e) => {
+                            if (e.target.value) setSmsEmailInput(e.target.value);
+                          }}
+                          className="w-full px-3 py-2 text-xs border border-gray-300 rounded-md bg-white font-mono focus:border-blue-500 focus:outline-hidden"
+                        >
+                          <option value="" disabled>-- Select a Gmail Account --</option>
+                          {GMAIL_RECIPIENT_OPTIONS.map((opt) => (
+                            <option key={opt.email} value={opt.email}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-700 mb-1">
+                          Selected / Custom Gmail Address:
+                        </label>
+                        <input
+                          type="email"
+                          value={smsEmailInput}
+                          onChange={(e) => setSmsEmailInput(e.target.value)}
+                          placeholder="your.name@gmail.com"
+                          className="w-full px-3 py-2 text-xs border border-gray-300 rounded-md font-mono focus:border-blue-500 focus:outline-hidden"
+                          required
+                        />
+                        {!isValidGmailAddress(smsEmailInput) ? (
+                          <p className="text-[10px] text-red-600 mt-1">Please enter a valid email address (e.g. {USER_ALERT_GMAIL}).</p>
+                        ) : (
+                          <p className="text-[10px] text-emerald-600 mt-1 flex items-center gap-1 font-mono">
+                            <Check className="w-3 h-3 text-emerald-600" />
+                            <span>Active Gmail: {smsEmailInput.trim()}</span>
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="block text-xs font-semibold text-gray-700">
+                            Receiving Mobile Phone Number:
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => setSmsPhoneInput(USER_ALERT_PHONE_FORMATTED)}
+                            className="text-[11px] text-blue-600 hover:text-blue-800 underline font-medium cursor-pointer"
+                          >
+                            Use {USER_ALERT_PHONE}
+                          </button>
+                        </div>
+                        <input
+                          type="text"
+                          value={smsPhoneInput}
+                          onChange={(e) => setSmsPhoneInput(e.target.value)}
+                          placeholder="+91 79754 53101 (or 7975453101)"
+                          className="w-full px-3 py-2 text-xs border border-gray-300 rounded-md font-mono focus:border-blue-500 focus:outline-hidden"
+                          required
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-700 mb-1">
+                          Duty Engineer Name:
+                        </label>
+                        <input
+                          type="text"
+                          value={smsNameInput}
+                          onChange={(e) => setSmsNameInput(e.target.value)}
+                          placeholder="Marcus Vance, P.E."
+                          className="w-full px-3 py-2 text-xs border border-gray-300 rounded-md focus:border-blue-500 focus:outline-hidden"
+                          required
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Trigger Toggles */}
+                  <div className="pt-3 border-t border-gray-100 space-y-3">
+                    <span className="block text-xs font-semibold text-gray-700">Automated Notification Triggers:</span>
+
+                    <label className="flex items-center gap-2.5 text-xs text-gray-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={smsConfig.sendGmailAlert}
+                        onChange={(e) => setSmsConfig(prev => ({ ...prev, sendGmailAlert: e.target.checked }))}
+                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <span>Automatically send leak alert message to selected Gmail every 1 minute when leak location rotates</span>
+                    </label>
+                    
+                    <label className="flex items-center gap-2.5 text-xs text-gray-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={smsConfig.sendOnCriticalBurst}
+                        onChange={(e) => setSmsConfig(prev => ({ ...prev, sendOnCriticalBurst: e.target.checked }))}
+                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <span>Dispatch instant SMS on Critical Pipe Rupture (&gt;50 L/s flow step)</span>
+                    </label>
+
+                    <label className="flex items-center gap-2.5 text-xs text-gray-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={smsConfig.sendValveIsolationProtocol}
+                        onChange={(e) => setSmsConfig(prev => ({ ...prev, sendValveIsolationProtocol: e.target.checked }))}
+                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <span>Include valve isolation key tags (e.g. V-108A &amp; V-108B) in message body</span>
+                    </label>
+                  </div>
+
+                  <div className="pt-4 border-t border-gray-100 flex flex-wrap items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={handleSendTestSms}
+                      className="px-3.5 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
+                    >
+                      <Mail className="w-3.5 h-3.5 text-red-600" />
+                      Send Test Alert to Selected Gmail
+                    </button>
+
+                    <button
+                      type="submit"
+                      disabled={!isValidPhoneNumber(smsPhoneInput) || !isValidGmailAddress(smsEmailInput)}
+                      className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-md text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                      Save Selected Gmail &amp; Settings
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-3 bg-gray-50 border-t border-gray-200 flex justify-between items-center text-xs text-gray-500">
+              <span className="flex items-center gap-1.5">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                Encrypted E.164 Telephony Protocol
+              </span>
+              <button
+                onClick={() => setShowSmsModal(false)}
+                className="px-4 py-1.5 bg-gray-800 hover:bg-gray-900 text-white rounded-md text-xs font-semibold cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Battledim Drawer / Ingestion Modal */}
+      {showDataDrawer && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg border border-gray-200 shadow-2xl max-w-4xl w-full max-h-[85vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between bg-gray-50">
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-base font-bold text-gray-900">
+                    Battledim Dataset &amp; Real SCADA Ingestion
+                  </h3>
+                  <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-800">PID: cqvdsywibtbdonsuuwpc</span>
+                </div>
+                <div className="text-xs text-gray-500 flex flex-wrap items-center gap-2 mt-0.5">
+                  <span>Calibrated EPANET Net3 baseline or custom municipal flow logger upload</span>
+                  <span>•</span>
+                  <a
+                    href="https://aquasense-smart-city-monitor.ai.studio"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-blue-600 hover:underline flex items-center gap-0.5 font-mono text-[11px]"
+                  >
+                    aquasense-smart-city-monitor.ai.studio
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowDataDrawer(false)}
+                className="p-1 rounded-md text-gray-400 hover:text-gray-700 hover:bg-gray-100 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 border-b border-gray-200 bg-white flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <label className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-xs font-semibold flex items-center gap-2 cursor-pointer shadow-xs transition-colors">
+                  <FileUp className="w-4 h-4" />
+                  <span>Upload SCADA CSV</span>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".csv"
+                    onChange={handleFileUpload}
+                    className="hidden"
+                  />
+                </label>
+
+                {customDataset && (
+                  <button
+                    onClick={handleResetToBenchmark}
+                    className="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    Reset to Benchmark
+                  </button>
+                )}
+              </div>
+
+              <button
+                onClick={handleExportCsv}
+                className="px-3.5 py-2 bg-white hover:bg-gray-50 text-gray-700 border border-gray-300 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs transition-colors"
+              >
+                <ArrowDownToLine className="w-4 h-4 text-gray-500" />
+                Download Current CSV
+              </button>
+            </div>
+
+            {csvUploadFeedback && (
+              <div className="px-6 py-2 bg-blue-50 text-blue-800 text-xs font-medium border-b border-blue-100 flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0" />
+                <span>{csvUploadFeedback}</span>
+              </div>
+            )}
+
+            <div className="flex-1 overflow-auto p-4">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="bg-gray-100 text-gray-600 font-semibold border-b border-gray-200">
+                    <th className="py-2.5 px-3">Timestamp</th>
+                    <th className="py-2.5 px-3">Actual Flow (L/s)</th>
+                    <th className="py-2.5 px-3">Expected Demand (L/s)</th>
+                    <th className="py-2.5 px-3">Pressure (psi)</th>
+                    <th className="py-2.5 px-3">Anomaly (L/s)</th>
+                    <th className="py-2.5 px-3">Z-Score</th>
+                    <th className="py-2.5 px-3">Statistical Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 font-mono">
+                  {flowData.map((row) => {
+                    const isRowAnomaly = (row.leakAnomaly || 0) > 0;
+                    return (
+                      <tr
+                        key={row.time}
+                        className={isRowAnomaly ? 'bg-red-50/60 font-semibold text-red-900' : 'hover:bg-gray-50'}
+                      >
+                        <td className="py-2 px-3 font-sans font-medium">{row.time}</td>
+                        <td className="py-2 px-3">{row.actualFlow.toFixed(1)}</td>
+                        <td className="py-2 px-3 text-gray-500">{row.expectedDemand.toFixed(1)}</td>
+                        <td className="py-2 px-3">{row.pressurePsi.toFixed(1)}</td>
+                        <td className="py-2 px-3">
+                          {isRowAnomaly ? (
+                            <span className="text-red-600">+{row.leakAnomaly?.toFixed(1)}</span>
+                          ) : (
+                            <span className="text-gray-400">0.0</span>
+                          )}
+                        </td>
+                        <td className="py-2 px-3">
+                          {row.zScore !== undefined ? (
+                            <span className={row.zScore > 2.0 ? 'text-red-600 font-bold' : 'text-gray-500'}>
+                              {row.zScore > 0 ? `+${row.zScore.toFixed(2)}` : row.zScore.toFixed(2)}σ
+                            </span>
+                          ) : (
+                            '--'
+                          )}
+                        </td>
+                        <td className="py-2 px-3 font-sans">
+                          {isRowAnomaly ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-800">
+                              RUPTURE OUTLIER
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-50 text-emerald-700">
+                              Nominal Demand
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="px-6 py-3 bg-gray-50 border-t border-gray-200 flex justify-end">
+              <button
+                onClick={() => setShowDataDrawer(false)}
+                className="px-4 py-2 bg-gray-800 hover:bg-gray-900 text-white rounded-md text-xs font-semibold cursor-pointer"
+              >
+                Close Table
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Dispatch Modal confirmation for interactive hackathon demo */}
+      {showDispatchModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg border border-gray-200 shadow-xl max-w-md w-full p-6 animate-in fade-in zoom-in duration-150">
+            <div className="flex items-center gap-3 text-emerald-600 mb-4">
+              <div className="p-2 bg-emerald-50 rounded-full border border-emerald-200">
+                <CheckCircle2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h4 className="text-base font-bold text-gray-900">Work Order Generated #{activeLeakScenario?.workOrderId || 'WO-8842'}</h4>
+                <p className="text-xs text-gray-500">Municipal Repair Crew Dispatched & SMS Logged</p>
+              </div>
+            </div>
+
+            <div className="bg-gray-50 rounded-md p-3.5 border border-gray-200 text-xs space-y-2 mb-4">
+              <div className="flex justify-between">
+                <span className="text-gray-500">Assigned Unit:</span>
+                <span className="font-semibold text-gray-900">Rapid Response Unit #4 (Hydraulics)</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Target Junction:</span>
+                <span className="font-semibold text-gray-900">Node {alertDetails?.nodeId || 'J-108'} ({alertDetails?.locationName || 'Oak & 5th Ave'})</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Estimated Size:</span>
+                <span className="font-bold text-red-600">{alertDetails?.estimatedLeakSizeLps || 85} L/s (~{Math.round((alertDetails?.estimatedLeakSizeLps || 85) * 3.6)} m³/h)</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Calculated Fracture:</span>
+                <span className="font-semibold text-gray-900">Ø {alertDetails?.equivalentDiameterMm} mm ({alertDetails?.orificeAreaMm2} mm²)</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Isolation Plan:</span>
+                <span className="font-semibold text-gray-900">Valves {(activeLeakScenario?.isolationValves || ['V-108A', 'V-108B']).join(' & ')}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Alert Dispatched To:</span>
+                <span className="font-semibold text-emerald-700 font-mono">{smsConfig.phoneNumber} (Delivered)</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Field Lead SMS:</span>
+                <span className="font-semibold text-emerald-700 font-mono">+1 (555) 792-4419 (ACK Received)</span>
+              </div>
+            </div>
+
+            <p className="text-xs text-gray-600 mb-4">
+              Repair team has received GPS coordinates and telemetry logs. Valve isolation protocol confirmed via field SMS.
+            </p>
+
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowDispatchModal(false)}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-xs font-semibold cursor-pointer"
+              >
+                Return to Dashboard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Supabase Cloud Hub Modal */}
+      {showSupabaseModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl border border-gray-200 shadow-2xl max-w-3xl w-full flex flex-col max-h-[90vh] overflow-hidden animate-in fade-in zoom-in duration-150">
+            {/* Modal Header */}
+            <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between border-b border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-emerald-500/20 text-emerald-400 rounded-lg border border-emerald-500/30">
+                  <Database className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-base font-bold text-white">Supabase Cloud Database</h3>
+                    <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-950 text-emerald-300 border border-emerald-700">
+                      atgbqxmergxaaazrhbpr
+                    </span>
+                    <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-gray-300">
+                      ap-northeast-1
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-300 mt-0.5">
+                    Project: <span className="text-white font-medium">{SUPABASE_CONFIG.projectName}</span>
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowSupabaseModal(false)}
+                className="text-gray-400 hover:text-white p-1 rounded-md cursor-pointer transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Tabs */}
+            <div className="flex border-b border-gray-200 bg-gray-50 px-6 text-xs font-semibold gap-6">
+              <button
+                onClick={() => setSupabaseTab('status')}
+                className={`py-3 border-b-2 flex items-center gap-1.5 cursor-pointer transition-colors ${
+                  supabaseTab === 'status'
+                    ? 'border-emerald-600 text-emerald-700'
+                    : 'border-transparent text-gray-500 hover:text-gray-800'
+                }`}
+              >
+                <Activity className="w-4 h-4" />
+                <span>Live Connection & Sync</span>
+              </button>
+              <button
+                onClick={() => setSupabaseTab('sql_schema')}
+                className={`py-3 border-b-2 flex items-center gap-1.5 cursor-pointer transition-colors ${
+                  supabaseTab === 'sql_schema'
+                    ? 'border-emerald-600 text-emerald-700'
+                    : 'border-transparent text-gray-500 hover:text-gray-800'
+                }`}
+              >
+                <FileText className="w-4 h-4" />
+                <span>PostgreSQL Schema (SQL Editor)</span>
+              </button>
+              <button
+                onClick={() => setSupabaseTab('sync_data')}
+                className={`py-3 border-b-2 flex items-center gap-1.5 cursor-pointer transition-colors ${
+                  supabaseTab === 'sync_data'
+                    ? 'border-emerald-600 text-emerald-700'
+                    : 'border-transparent text-gray-500 hover:text-gray-800'
+                }`}
+              >
+                <Settings className="w-4 h-4" />
+                <span>Credentials & REST API</span>
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="flex-1 overflow-auto p-6 bg-slate-50/50 space-y-5">
+              {supabaseTab === 'status' && (
+                <div className="space-y-5">
+                  {/* Connection Card */}
+                  <div className="bg-white p-4 rounded-lg border border-gray-200 shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="flex items-start gap-3">
+                      <div className={`p-2 rounded-full mt-0.5 ${
+                        supabaseStatus?.connected
+                          ? 'bg-emerald-50 text-emerald-600 border border-emerald-200'
+                          : 'bg-amber-50 text-amber-600 border border-amber-200'
+                      }`}>
+                        <Cloud className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-gray-900">Supabase Cloud REST Endpoint</span>
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            supabaseStatus?.connected
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-amber-100 text-amber-800'
+                          }`}>
+                            {supabaseStatus?.connected ? 'ONLINE & RESPONSIVE' : 'CHECKING...'}
+                          </span>
+                        </div>
+                        <div className="text-xs font-mono text-gray-600 mt-1 break-all">
+                          {SUPABASE_CONFIG.url}/rest/v1/
+                        </div>
+                        <div className="text-[11px] text-gray-400 mt-1 flex items-center gap-2">
+                          <span>Region: {SUPABASE_CONFIG.region}</span>
+                          <span>•</span>
+                          <span>Ping Latency: <strong className="text-gray-700">{supabaseStatus?.latencyMs ?? 85} ms</strong></span>
+                          <span>•</span>
+                          <span>Last Checked: {supabaseStatus?.timestamp ?? 'Just now'}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={handleTestSupabase}
+                      disabled={isTestingSupabase}
+                      className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-md text-xs font-semibold shrink-0 cursor-pointer flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
+                    >
+                      {isTestingSupabase ? (
+                        <>
+                          <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Testing...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Zap className="w-3.5 h-3.5 text-amber-400" />
+                          <span>Ping REST API</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  {/* Quick Push Operations Grid */}
+                  <div>
+                    <h4 className="text-xs font-bold text-gray-700 uppercase tracking-wider mb-2">
+                      Live Push Actions (Client to Supabase)
+                    </h4>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      {/* Card 1: Leak Incidents */}
+                      <div className="bg-white p-3.5 rounded-lg border border-gray-200 shadow-2xs flex flex-col justify-between">
+                        <div>
+                          <div className="flex items-center justify-between text-xs font-bold text-gray-800 mb-1">
+                            <span className="flex items-center gap-1.5 text-red-600">
+                              <ShieldAlert className="w-4 h-4" />
+                              Leak Incidents
+                            </span>
+                            <span className="text-[10px] font-mono text-gray-500">public.leak_incidents</span>
+                          </div>
+                          <p className="text-[11px] text-gray-500 mb-3">
+                            {isSimulating
+                              ? `Rupture active at Node J-108 (${alertDetails?.estimatedLeakSizeLps} L/s)`
+                              : 'Nominal monitoring state (no active rupture)'}
+                          </p>
+                        </div>
+                        <button
+                          onClick={handleSyncLeakToSupabase}
+                          disabled={isSyncingSupabase || !isSimulating}
+                          className="w-full py-1.5 px-2 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <Send className="w-3 h-3" />
+                          <span>Push Leak Event</span>
+                        </button>
+                      </div>
+
+                      {/* Card 2: Work Orders */}
+                      <div className="bg-white p-3.5 rounded-lg border border-gray-200 shadow-2xs flex flex-col justify-between">
+                        <div>
+                          <div className="flex items-center justify-between text-xs font-bold text-gray-800 mb-1">
+                            <span className="flex items-center gap-1.5 text-blue-600">
+                              <Wrench className="w-4 h-4" />
+                              Work Orders
+                            </span>
+                            <span className="text-[10px] font-mono text-gray-500">public.work_orders</span>
+                          </div>
+                          <p className="text-[11px] text-gray-500 mb-3">
+                            {workOrdersList.length} municipal repair tickets & isolation valve records
+                          </p>
+                        </div>
+                        <button
+                          onClick={handleSyncWorkOrdersToSupabase}
+                          disabled={isSyncingSupabase}
+                          className="w-full py-1.5 px-2 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition-colors disabled:opacity-50"
+                        >
+                          <Send className="w-3 h-3" />
+                          <span>Push Work Orders</span>
+                        </button>
+                      </div>
+
+                      {/* Card 3: SMS Dispatches */}
+                      <div className="bg-white p-3.5 rounded-lg border border-gray-200 shadow-2xs flex flex-col justify-between">
+                        <div>
+                          <div className="flex items-center justify-between text-xs font-bold text-gray-800 mb-1">
+                            <span className="flex items-center gap-1.5 text-emerald-600">
+                              <Smartphone className="w-4 h-4" />
+                              SMS Dispatches
+                            </span>
+                            <span className="text-[10px] font-mono text-gray-500">public.sms_dispatches</span>
+                          </div>
+                          <p className="text-[11px] text-gray-500 mb-3">
+                            {smsMessages.length} outbound alerts and field crew ACK replies
+                          </p>
+                        </div>
+                        <button
+                          onClick={handleSyncSmsToSupabase}
+                          disabled={isSyncingSupabase}
+                          className="w-full py-1.5 px-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition-colors disabled:opacity-50"
+                        >
+                          <Send className="w-3 h-3" />
+                          <span>Push SMS Logs</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Sync Activity Feed */}
+                  <div className="bg-white p-4 rounded-lg border border-gray-200 shadow-2xs">
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-xs font-bold text-gray-800">
+                        Supabase Synchronization Activity Feed
+                      </h4>
+                      <span className="text-[11px] text-gray-400 font-mono">
+                        {supabaseSyncLogs.length} transactions
+                      </span>
+                    </div>
+                    <div className="space-y-2 max-h-48 overflow-y-auto font-mono text-xs">
+                      {supabaseSyncLogs.map((log, idx) => (
+                        <div
+                          key={idx}
+                          className={`p-2.5 rounded border text-[11px] flex items-start justify-between gap-3 ${
+                            log.success
+                              ? 'bg-emerald-50/60 border-emerald-200 text-emerald-900'
+                              : 'bg-amber-50/70 border-amber-200 text-amber-900'
+                          }`}
+                        >
+                          <div className="flex items-start gap-2">
+                            {log.success ? (
+                              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                            ) : (
+                              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                            )}
+                            <div>
+                              <div className="font-semibold">{log.message}</div>
+                              <div className="text-[10px] text-gray-500 mt-0.5">
+                                Target: {log.table} • Records: {log.count}
+                              </div>
+                            </div>
+                          </div>
+                          <span className="text-[10px] text-gray-400 shrink-0">{log.timestamp}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {supabaseTab === 'sql_schema' && (
+                <div className="space-y-4">
+                  <div className="bg-blue-50 border border-blue-200 p-4 rounded-lg text-xs text-blue-900 flex items-start justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="font-bold flex items-center gap-1.5 text-blue-950">
+                        <Info className="w-4 h-4 text-blue-600" />
+                        Quick Setup: Run this script in your Supabase SQL Editor
+                      </div>
+                      <p className="text-blue-800 leading-relaxed">
+                        To enable persistent storage, copy the script below and paste it into your Supabase Dashboard:
+                        <strong> SQL Editor &rarr; + New Query &rarr; Run</strong>. This creates the tables for leaks, work orders, SMS dispatches, and telemetry with Row Level Security.
+                      </p>
+                    </div>
+                    <a
+                      href={`https://supabase.com/dashboard/project/${SUPABASE_CONFIG.projectId}/sql`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-semibold shrink-0 flex items-center gap-1.5 transition-colors"
+                    >
+                      <span>Open SQL Editor</span>
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                  </div>
+
+                  <div className="relative">
+                    <div className="flex items-center justify-between bg-slate-900 text-slate-300 px-4 py-2 rounded-t-lg text-xs font-mono border-b border-slate-800">
+                      <span>supabase_schema.sql</span>
+                      <button
+                        onClick={handleCopySql}
+                        className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-white rounded text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors"
+                      >
+                        {copiedSql ? (
+                          <>
+                            <Check className="w-3.5 h-3.5 text-emerald-400" />
+                            <span className="text-emerald-400 font-semibold">Copied!</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3.5 h-3.5" />
+                            <span>Copy SQL Script</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                    <pre className="bg-slate-950 text-slate-100 p-4 rounded-b-lg font-mono text-[11px] leading-relaxed max-h-80 overflow-y-auto whitespace-pre-wrap selection:bg-blue-600">
+                      {SUPABASE_SQL_SCHEMA}
+                    </pre>
+                  </div>
+                </div>
+              )}
+
+              {supabaseTab === 'sync_data' && (
+                <div className="space-y-4">
+                  <div className="bg-white p-5 rounded-lg border border-gray-200 shadow-2xs space-y-4 text-xs">
+                    <h4 className="font-bold text-gray-900 text-sm border-b border-gray-100 pb-2">
+                      Active Supabase Project Credentials
+                    </h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="p-3 bg-gray-50 rounded border border-gray-200">
+                        <span className="text-[11px] font-semibold text-gray-500 uppercase block">Project Name</span>
+                        <span className="font-semibold text-gray-900 text-sm mt-0.5 block">{SUPABASE_CONFIG.projectName}</span>
+                      </div>
+                      <div className="p-3 bg-gray-50 rounded border border-gray-200">
+                        <span className="text-[11px] font-semibold text-gray-500 uppercase block">Project ID</span>
+                        <span className="font-mono font-bold text-blue-700 text-sm mt-0.5 block">{SUPABASE_CONFIG.projectId}</span>
+                      </div>
+                      <div className="p-3 bg-gray-50 rounded border border-gray-200">
+                        <span className="text-[11px] font-semibold text-gray-500 uppercase block">Region</span>
+                        <span className="font-mono font-bold text-gray-800 text-sm mt-0.5 block">{SUPABASE_CONFIG.region} (Tokyo)</span>
+                      </div>
+                      <div className="p-3 bg-gray-50 rounded border border-gray-200">
+                        <span className="text-[11px] font-semibold text-gray-500 uppercase block">API REST URL</span>
+                        <span className="font-mono text-gray-800 text-xs mt-0.5 block break-all">{SUPABASE_CONFIG.url}/rest/v1/</span>
+                      </div>
+                    </div>
+
+                    <div className="p-3 bg-gray-50 rounded border border-gray-200">
+                      <span className="text-[11px] font-semibold text-gray-500 uppercase block">Publishable Anon Key</span>
+                      <span className="font-mono text-gray-700 text-xs mt-1 block break-all bg-white p-2 rounded border border-gray-200">
+                        {SUPABASE_CONFIG.publishableKey}
+                      </span>
+                    </div>
+
+                    <div className="pt-2 flex justify-between items-center text-gray-500 text-xs">
+                      <span>Configured in <code className="font-mono text-blue-600">.env</code> and <code className="font-mono text-blue-600">src/lib/supabase.ts</code></span>
+                      <a
+                        href={`https://supabase.com/dashboard/project/${SUPABASE_CONFIG.projectId}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-blue-600 hover:underline flex items-center gap-1 font-semibold"
+                      >
+                        Open Supabase Project Dashboard
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-3 bg-gray-50 border-t border-gray-200 flex items-center justify-between">
+              <span className="text-xs text-gray-500 font-mono">
+                Instance: {SUPABASE_CONFIG.projectId}.supabase.co
+              </span>
+              <button
+                onClick={() => setShowSupabaseModal(false)}
+                className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-md text-xs font-semibold cursor-pointer transition-colors"
+              >
+                Close Hub
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clean Enterprise Footer */}
+      <footer className="bg-white border-t border-gray-200 px-6 py-4 mt-auto">
+        <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between text-xs text-gray-500 gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-bold text-gray-800">LeakNova</span>
+            <span>—</span>
+            <span>EPANET 2.2 Numerical Engine & Emergency SMS Telephony Gateway</span>
+            <span className="hidden sm:inline text-gray-300">|</span>
+            <span className="hidden sm:inline font-mono text-[11px] text-gray-600">PID: cqvdsywibtbdonsuuwpc</span>
+            <span className="hidden lg:inline font-mono text-[11px] text-gray-400">UUID: bd0f6dee-0647-4d81-9582-0929186cd9e4</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-4">
+            <button
+              onClick={() => setShowSupabaseModal(true)}
+              className="inline-flex items-center gap-1 font-mono text-[11px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 hover:bg-emerald-100 transition-colors cursor-pointer"
+            >
+              <Database className="w-3 h-3 text-emerald-600" />
+              <span>Supabase: {SUPABASE_CONFIG.projectId}</span>
+            </button>
+            <a
+              href="https://aquasense-smart-city-monitor.ai.studio"
+              target="_blank"
+              rel="noreferrer"
+              className="text-blue-600 hover:underline flex items-center gap-1 font-mono text-[11px]"
+            >
+              aquasense-smart-city-monitor.ai.studio
+              <ExternalLink className="w-3 h-3" />
+            </a>
+            <span className="text-gray-300">•</span>
+            <span>SMS Dispatch: <strong className="text-emerald-700 font-mono">{smsConfig.phoneNumber}</strong></span>
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+            <span>Status: Nominal SCADA Feed</span>
+          </div>
+        </div>
+      </footer>
+    </div>
+  );
+}
